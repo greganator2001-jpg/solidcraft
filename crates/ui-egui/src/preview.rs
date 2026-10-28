@@ -174,6 +174,21 @@ impl PreviewState {
         self.set_scene(GpuScene::default());
     }
 
+    /// Fission's BAMBU tab: draw the print plate (`build`) in place of the bodies `replaced`, built
+    /// again only when `key` changes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn show_plate(&mut self, key: u64, replaced: Vec<String>, bounds: Aabb3, build: impl FnOnce() -> GpuScene) {
+        if self.active && self.shown_key == Some(key) {
+            return;
+        }
+        self.clear();
+        self.shown_key = Some(key);
+        self.replaced = replaced;
+        self.bounds = bounds;
+        self.active = true;
+        self.set_scene(build());
+    }
+
     fn set_scene(&mut self, sc: GpuScene) {
         if let Ok(mut slot) = self.slot.lock() {
             *slot = Some(sc);
@@ -349,6 +364,12 @@ fn stream_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option
 /// Keep the preview in step with the open dialog: start a computation when its inputs changed,
 /// take finished results. Called once per frame.
 pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
+    // Fission: the BAMBU tab shows its print plate instead of the design's bodies.
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::bambu_ui::active(app) {
+        crate::bambu_ui::plate_scene(app);
+        return;
+    }
     let cmds = match app.dialog.as_ref().filter(|d| d.previews() && d.preview_enabled).map(|d| crate::dialogs::preview_commands(app, d)) {
         Some(Ok(c)) if !c.is_empty() => c,
         _ if crate::sketch_attachment_ui::commands(app).is_some() => crate::sketch_attachment_ui::commands(app).unwrap_or_default(),

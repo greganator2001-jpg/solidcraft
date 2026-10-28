@@ -136,6 +136,11 @@ pub struct SliceParams {
     /// Process settings to change, by Bambu Studio's key: {"sparse_infill_density": "20%"}.
     #[serde(default)]
     pub overrides: Option<Map<String, Value>>,
+    /// Where bodies sit on the plate, by name: {x, y, rotation?}, the middle of the body's footprint
+    /// in mm in the plate's coordinates, turned `rotation` degrees about Z. Default: the design's
+    /// layout, centred on the plate.
+    #[serde(default)]
+    pub placements: Option<Map<String, Value>>,
 }
 
 /// A filament the sliced plate uses.

@@ -84,6 +84,10 @@ impl Process {
 pub struct State {
     /// A ribbon button's action, done when the sidebar next draws.
     pending: Option<Act>,
+    /// The plate in the 3D view: the parts where they'll print, the sliced toolpaths.
+    pub(crate) plate: crate::bambu_plate::Plate,
+    /// The design's camera while the tab shows the plate (put back on leaving).
+    design_camera: Option<(solidcraft_engine::render::Camera, bool)>,
     started: bool,
     preview: bool,
     channel: Option<(Sender<Answer>, Receiver<Answer>)>,
@@ -236,6 +240,21 @@ pub fn ribbon(app: &mut SolveApp, id: &str) -> bool {
 
 /// Take the workers' answers (every frame, before drawing).
 pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
+    if !active(app) {
+        app.bambu.plate.fitted = false;
+        if let Some((cam, perspective)) = app.bambu.design_camera.take() {
+            app.cam = cam;
+            app.ui.perspective = perspective;
+        }
+    } else {
+        app.bambu.plate.tick();
+        if app.bambu.plate.loading() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        if app.bambu.plate.keys(ctx) {
+            app.bambu.sliced = None;
+        }
+    }
     let answers: Vec<Answer> = app.bambu.channel.as_ref().map(|(_, rx)| rx.try_iter().collect()).unwrap_or_default();
     if !app.bambu.busy.is_empty() {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -263,6 +282,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             (Job::Slice, Ok(v)) => {
                 let msg = format("fission.bambu.sliced", &[("time", text(&v, "time")), ("grams", &format!("{:.1}", number(&v, "grams")))]);
                 app.bambu.picture = picture(ctx, text(&v, "thumbnail"));
+                app.bambu.plate.load_toolpaths(text(&v, "file"));
                 app.bambu.sliced = Some(v);
                 app.bambu.preview = true;
                 app.bambu.message = Some((msg.clone(), false));
@@ -357,6 +377,57 @@ fn picture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
     Some(ctx.load_texture("fission_plate_picture", colour, egui::TextureOptions::LINEAR))
 }
 
+/// The printer's plate [x0, y0, x1, y1] (a 256 mm plate until the presets are read).
+fn bed(s: &State) -> (f64, f64, f64, f64) {
+    let b = |i: usize| s.presets.get("bed").and_then(|v| v.get(i)).and_then(Value::as_f64);
+    match (b(0), b(1), b(2), b(3)) {
+        (Some(x0), Some(y0), Some(x1), Some(y1)) if x1 > x0 && y1 > y0 => (x0, y0, x1, y1),
+        _ => (0.0, 0.0, 256.0, 256.0),
+    }
+}
+
+fn height(s: &State) -> f64 {
+    s.presets.get("height").and_then(Value::as_f64).filter(|h| *h > 0.0).unwrap_or(256.0)
+}
+
+/// Each body's filament colour (its slot's).
+fn body_colours(s: &State, bodies: &[(String, String)]) -> BTreeMap<String, String> {
+    bodies
+        .iter()
+        .map(|(b, shown)| {
+            let slot = s.body_slot.get(b).copied().unwrap_or(1);
+            let c = s.slots.get(slot.saturating_sub(1)).map(|sl| sl.color.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| shown.clone());
+            (b.clone(), c)
+        })
+        .collect()
+}
+
+/// The BAMBU tab's 3D view: the plate with the parts (Prepare) or the toolpaths (Preview), in place
+/// of the design's bodies. Called by the preview each frame while the tab shows.
+pub fn plate_scene(app: &mut SolveApp) {
+    let (bed, height) = (bed(&app.bambu), height(&app.bambu));
+    app.bambu.plate.refresh(&app.session, bed);
+    // a plate changed since it was sliced shows no old toolpaths
+    if app.bambu.sliced.is_none() && app.bambu.plate.has_toolpaths() {
+        app.bambu.plate.forget_toolpaths();
+    }
+    let bodies = solidcraft_engine::cmd::bambu::plate_bodies(&app.session);
+    let colours = body_colours(&app.bambu, &bodies);
+    let preview = app.bambu.preview;
+    let key = app.bambu.plate.scene_key(preview, bed, &colours) ^ 0xF155_1011;
+    let replaced: Vec<String> = bodies.iter().map(|(b, _)| b.clone()).collect();
+    let bounds = crate::bambu_plate::Plate::bounds(bed, height);
+    let plate = &app.bambu.plate;
+    app.preview.show_plate(key, replaced, bounds, || plate.scene(preview, bed, height, &colours));
+    if !app.bambu.plate.fitted {
+        app.bambu.plate.fitted = true;
+        if app.bambu.design_camera.is_none() {
+            app.bambu.design_camera = Some((app.cam, app.ui.perspective));
+        }
+        app.fit_bounds(bounds);
+    }
+}
+
 fn slice_params(app: &SolveApp, bodies: &[(String, String)]) -> Value {
     let s = &app.bambu;
     let filaments = s.filament_names();
@@ -365,7 +436,9 @@ fn slice_params(app: &SolveApp, bodies: &[(String, String)]) -> Value {
     let slots: serde_json::Map<String, Value> =
         bodies.iter().map(|(b, _)| (b.clone(), json!(s.body_slot.get(b).copied().unwrap_or(1).clamp(1, s.slots.len().max(1))))).collect();
     let overrides: serde_json::Map<String, Value> = s.settings.edits.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-    let mut p = json!({"printer": s.printer_name(), "process": s.process_name(), "filaments": chosen, "slots": slots, "overrides": overrides});
+    let placements: serde_json::Map<String, Value> =
+        s.plate.places.iter().map(|(b, (x, y, r))| (b.clone(), json!({"x": x, "y": y, "rotation": r}))).collect();
+    let mut p = json!({"printer": s.printer_name(), "process": s.process_name(), "filaments": chosen, "slots": slots, "overrides": overrides, "placements": placements});
     if let Some(bed) = names(&s.presets, "bed_types").get(s.bed) {
         p["bed_type"] = json!(bed);
     }
@@ -635,15 +708,38 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
         for (body, _) in bodies {
             let mut i = s.body_slot.get(body).copied().unwrap_or(1).clamp(1, s.slots.len().max(1)) - 1;
             let colour_now = s.slots.get(i).map(|sl| sl.color.clone()).unwrap_or_default();
+            let picked = s.plate.selected.as_deref() == Some(body.as_str());
             ui.horizontal(|ui| {
                 chip(ui, &colour_now, i + 1);
-                ui_kit::text(ui, body, ui_kit::Text::Inline);
+                // a click picks the part to move and turn on the plate
+                if ui_kit::button(ui, body.as_str(), if picked { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small }).clicked() {
+                    s.plate.selected = if picked { None } else { Some(body.clone()) };
+                    s.preview = false;
+                }
                 if s.slots.len() > 1 {
                     ui_kit::dropdown(ui, &format!("fission_bambu_body_{body}"), &mut i, &refs);
                 }
             });
             if s.body_slot.insert(body.clone(), i + 1) != Some(i + 1) && s.body_slot.len() > 1 {
                 s.sliced = None;
+            }
+            if picked && s.plate.placement_controls(ui, bed(s)) {
+                s.sliced = None;
+            }
+        }
+        if !bodies.is_empty() {
+            ui.horizontal(|ui| {
+                if ui_kit::button(ui, tr("fission.plate.arrange"), ui_kit::Button::Small).clicked() {
+                    let b = bed(s);
+                    s.plate.arrange(b);
+                    s.sliced = None;
+                    s.preview = false;
+                }
+            });
+            ui_kit::text(ui, tr("fission.plate.hint"), ui_kit::Text::Note("fission_plate_hint"));
+            let off = s.plate.off_plate(bed(s));
+            if !off.is_empty() {
+                ui_kit::text(ui, &format("fission.plate.off", &[("names", &off.join(", "))]), ui_kit::Text::Error("fission_plate_off"));
             }
         }
 
@@ -724,16 +820,23 @@ fn process_settings(s: &mut State, ui: &mut egui::Ui) {
 /// The card across the bottom: what the slice came to, and the printer's job while it prints.
 fn result_strip(app: &mut SolveApp, ui: &mut egui::Ui, act: &mut Option<Act>) {
     let s = &app.bambu;
-    let printing = s.status.as_ref().filter(|v| matches!(text(v, "state"), "RUNNING" | "PAUSE" | "PREPARE"));
-    let height = crate::theme::Tokens::get().control_height * if printing.is_some() { 3.2 } else { 2.2 };
+    let printing = s.status.clone().filter(|v| matches!(text(v, "state"), "RUNNING" | "PAUSE" | "PREPARE"));
+    let rows = if s.preview { 3.4 } else { 2.2 } + if printing.is_some() { 1.0 } else { 0.0 };
+    let height = crate::theme::Tokens::get().control_height * rows;
     let available = ui.available_rect_before_wrap();
     ui_kit::Panel::bottom_strip(ui, "fission_print_result", available, height, |ui| {
-        let s = &app.bambu;
+        let s = &mut app.bambu;
         if s.is_busy(Job::Slice) {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui_kit::text(ui, tr("fission.bambu.slicing"), ui_kit::Text::Note("fission_bambu_slicing"));
             });
+        } else if s.preview {
+            if let Some(v) = &s.sliced {
+                let summary = format("fission.bambu.sliced", &[("time", text(v, "time")), ("grams", &format!("{:.1}", number(v, "grams")))]);
+                ui_kit::text(ui, &summary, ui_kit::Text::Value("fission_bambu_result", true));
+            }
+            s.plate.preview_controls(ui);
         } else if let Some(v) = &s.sliced {
             ui.horizontal(|ui| {
                 let summary = format("fission.bambu.sliced", &[("time", text(v, "time")), ("grams", &format!("{:.1}", number(v, "grams")))]);
@@ -748,7 +851,7 @@ fn result_strip(app: &mut SolveApp, ui: &mut egui::Ui, act: &mut Option<Act>) {
         } else {
             ui_kit::text(ui, tr("fission.bambu.slice_hint"), ui_kit::Text::Note("fission_bambu_hint"));
         }
-        if let Some(v) = printing {
+        if let Some(v) = &printing {
             ui.horizontal(|ui| {
                 let line = format(
                     "fission.bambu.job",
@@ -775,32 +878,6 @@ fn result_strip(app: &mut SolveApp, ui: &mut egui::Ui, act: &mut Option<Act>) {
             ui_kit::text(ui, m, style);
         }
     });
-}
-
-/// Preview: Bambu Studio's picture of the sliced plate, over the view.
-fn preview_card(app: &mut SolveApp, ctx: &egui::Context) {
-    let s = &app.bambu;
-    if !s.preview {
-        return;
-    }
-    let title = tr("fission.bambu.preview").to_string();
-    let close = ui_kit::Window::new(egui::Id::new("fission_print_preview"), "mesh_export", &title).cards(2.0).show_body(ctx, |ui| {
-        match (&s.sliced, &s.picture) {
-            (Some(_), Some(tex)) => {
-                let w = ui.available_width().min(512.0);
-                ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(w, w)));
-            }
-            (Some(_), None) => {
-                ui_kit::text(ui, tr("fission.bambu.no_picture"), ui_kit::Text::Note("fission_bambu_no_picture"));
-            }
-            (None, _) => {
-                ui_kit::text(ui, tr("fission.bambu.slice_hint"), ui_kit::Text::Note("fission_bambu_preview_hint"));
-            }
-        }
-    });
-    if close {
-        app.bambu.preview = false;
-    }
 }
 
 /// Bambu Studio's Send print dialog: printer, each filament's AMS tray, options.
@@ -874,7 +951,6 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::shell::register_panel(app, "fission:print", rect, Some(if side == "left" { ui_kit::Edge::Left } else { ui_kit::Edge::Right }));
     result_strip(app, ui, &mut act);
     let ctx = ui.ctx().clone();
-    preview_card(app, &ctx);
     send_dialog(app, &ctx, &mut act);
     match act {
         Some(Act::Slice) => slice(app, &bodies),

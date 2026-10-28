@@ -10,7 +10,7 @@ fn schemas_and_the_key_check_agree() {
     assert_keys(input_schema_for::<PrintersParams>(), &["discover", "wait"]);
     assert_keys(
         input_schema_for::<SliceParams>(),
-        &["arrange", "bed_type", "bodies", "filaments", "orient", "overrides", "printer", "process", "slots"],
+        &["arrange", "bed_type", "bodies", "filaments", "orient", "overrides", "placements", "printer", "process", "slots"],
     );
     assert_keys(input_schema_for::<OpenInStudioParams>(), &["bodies", "file", "slots"]);
     assert_keys(input_schema_for::<StatusParams>(), &["ip", "printer", "serial"]);

@@ -8,10 +8,13 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use solidcraft_bambu::lan::{self, PrintOptions, Printer, PrinterAddr, Tray};
-use solidcraft_bambu::model3mf::{self, Part};
+use solidcraft_bambu::model3mf;
 use solidcraft_bambu::profiles::{self, Library};
 use solidcraft_bambu::slice::{self, Filament, SliceJob, UsedFilament};
 use solidcraft_bambu::studio;
+
+pub use solidcraft_bambu::gcode;
+pub use solidcraft_bambu::model3mf::{Part, arrange, centre_on_bed, place};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, string_list};
@@ -55,7 +58,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(output_schema_for::<sch::SliceResult>)
         .icon("export")
         .noundo()
-        .params("printer? (preset, from bambu.presets; default as bambu.presets); process? (default: the printer's default); filaments?: [preset name or {preset, color?}] (slot 1 first; default: the printer's PLA in the bodies' colours); bodies?: [names] (default: the shown bodies); slots?: {body: slot 1..16} (default 1); bed_type?; arrange?: bool (default false: the bodies stay where they are, centred on the plate); orient?: bool; overrides?: {setting: value} (process settings, e.g. sparse_infill_density) → file (the sliced .gcode.3mf), seconds, time, grams, filaments: [{slot, material, color, grams, meters}], note"),
+        .params("printer? (preset, from bambu.presets; default as bambu.presets); process? (default: the printer's default); filaments?: [preset name or {preset, color?}] (slot 1 first; default: the printer's PLA in the bodies' colours); bodies?: [names] (default: the shown bodies); slots?: {body: slot 1..16} (default 1); bed_type?; arrange?: bool (default false: the bodies stay where they are, centred on the plate); orient?: bool; overrides?: {setting: value} (process settings, e.g. sparse_infill_density); placements?: {body: {x, y, rotation?}} (where a body sits on the plate: the middle of its footprint, mm in the plate's coordinates, turned rotation degrees about Z; others stay where the design has them, centred on the plate) → file (the sliced .gcode.3mf), seconds, time, grams, filaments: [{slot, material, color, grams, meters}], note"),
     CommandSpec::new("bambu.status", "Printer Status", crate::checked!("bambu.status", status))
         .contract(&STATUS_CONTRACT)
         .output(output_schema_for::<sch::StatusResult>)
@@ -345,6 +348,17 @@ pub fn prepare_slice(s: &Session, p: &Value) -> Result<SlicePlan> {
     };
     let mut parts = plate_parts(s, p, cmd)?;
     model3mf::centre_on_bed(&mut parts, lib.bed(&printer));
+    // where the Print workspace put each part on the plate
+    if let Some(places) = p.get("placements").and_then(Value::as_object) {
+        for part in &mut parts {
+            let Some(at) = places.get(&part.name) else { continue };
+            let n = |k: &str| at.get(k).and_then(Value::as_f64);
+            match (n("x"), n("y")) {
+                (Some(x), Some(y)) if x.is_finite() && y.is_finite() => model3mf::place(part, x, y, n("rotation").unwrap_or(0.0)),
+                _ => return Err(bad(cmd, format!("the placement of `{}` needs numbers x and y", part.name))),
+            }
+        }
+    }
     if let Some((lo, hi)) = model3mf::bounds_of(&parts) {
         let (x0, y0, x1, y1) = lib.bed(&printer);
         let fits = hi[0] - lo[0] <= x1 - x0 && hi[1] - lo[1] <= y1 - y0 && hi[2] - lo[2] <= lib.height(&printer);
@@ -386,6 +400,12 @@ pub fn run_detached(id: &str, p: &Value) -> Result<Value> {
         "bambu.control" => control_of(p),
         _ => Err(EngineError::UnknownCommand(id.to_string())),
     }
+}
+
+/// The shown bodies as plate parts (each on filament 1, where the design has them), for the Print
+/// workspace to draw and place.
+pub fn plate_parts_of(s: &Session) -> Result<Vec<Part>> {
+    plate_parts(s, &Value::Null, "bambu.slice")
 }
 
 /// The bodies `bambu.slice` prints by default (the shown ones), each with the colour it is shown in.

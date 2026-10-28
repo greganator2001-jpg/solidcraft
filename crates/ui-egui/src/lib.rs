@@ -14,6 +14,8 @@ pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
+mod bambu_plate;
 mod bambu_ui;
 pub mod bidi;
 pub mod bom_panel;

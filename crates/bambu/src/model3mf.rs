@@ -41,6 +41,67 @@ pub fn centre_on_bed(parts: &mut [Part], bed: (f64, f64, f64, f64)) {
     }
 }
 
+/// Put a part on the plate: turned `rotation` degrees about Z around the middle of its footprint,
+/// that middle moved to (`x`, `y`), and its lowest point on the plate (z = 0).
+pub fn place(part: &mut Part, x: f64, y: f64, rotation: f64) {
+    let Some((lo, hi)) = part.bounds() else { return };
+    if !(x.is_finite() && y.is_finite()) {
+        return;
+    }
+    let (cx, cy) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
+    let (s, c) = if rotation.is_finite() { rotation.to_radians().sin_cos() } else { (0.0, 1.0) };
+    for v in &mut part.vertices {
+        let (dx, dy) = (v[0] - cx, v[1] - cy);
+        v[0] = dx * c - dy * s;
+        v[1] = dx * s + dy * c;
+    }
+    // the turned footprint's middle (a turn moves it off the old middle)
+    let Some((lo, hi)) = part.bounds() else { return };
+    let (mx, my) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
+    for v in &mut part.vertices {
+        v[0] += x - mx;
+        v[1] += y - my;
+        v[2] -= lo[2];
+    }
+}
+
+/// Lay the parts out in rows on the plate, `gap` mm apart, the rows centred: (name, x, y) of each
+/// part's footprint middle. Parts that don't fit keep going past the plate's far edge.
+pub fn arrange(parts: &[Part], bed: (f64, f64, f64, f64), gap: f64) -> Vec<(String, f64, f64)> {
+    let (x0, y0, x1, y1) = bed;
+    let mut sized: Vec<(String, f64, f64)> =
+        parts.iter().filter_map(|p| p.bounds().map(|(lo, hi)| (p.name.clone(), hi[0] - lo[0], hi[1] - lo[1]))).collect();
+    // tallest footprints first, like a shelf
+    sized.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let width = x1 - x0;
+    let mut rows: Vec<Vec<(String, f64, f64)>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for p in sized {
+        if rows.last().is_some_and(|r| !r.is_empty()) && used + gap + p.1 > width {
+            rows.push(Vec::new());
+            used = 0.0;
+        }
+        used += if used > 0.0 { gap } else { 0.0 } + p.1;
+        if let Some(row) = rows.last_mut() {
+            row.push(p);
+        }
+    }
+    let heights: Vec<f64> = rows.iter().map(|r| r.iter().map(|p| p.2).fold(0.0, f64::max)).collect();
+    let total: f64 = heights.iter().sum::<f64>() + gap * (rows.len().saturating_sub(1)) as f64;
+    let mut y = (y0 + y1) / 2.0 + total / 2.0;
+    let mut out = Vec::new();
+    for (row, h) in rows.iter().zip(&heights) {
+        let row_width: f64 = row.iter().map(|p| p.1).sum::<f64>() + gap * (row.len().saturating_sub(1)) as f64;
+        let mut x = (x0 + x1) / 2.0 - row_width / 2.0;
+        for (name, w, _) in row {
+            out.push((name.clone(), x + w / 2.0, y - h / 2.0));
+            x += w + gap;
+        }
+        y -= h + gap;
+    }
+    out
+}
+
 pub fn bounds_of(parts: &[Part]) -> Option<([f64; 3], [f64; 3])> {
     parts.iter().filter_map(Part::bounds).reduce(|(alo, ahi), (blo, bhi)| {
         ([alo[0].min(blo[0]), alo[1].min(blo[1]), alo[2].min(blo[2])], [ahi[0].max(bhi[0]), ahi[1].max(bhi[1]), ahi[2].max(bhi[2])])
@@ -207,6 +268,19 @@ mod tests {
         let mut bad = test_cube((0.0, 0.0, 10.0, 10.0));
         bad.triangles.push([0, 1, 99]);
         assert!(write(&[bad]).is_err());
+        // placing: a 20 mm cube turned 45° is about 28.3 mm across, centred where asked, on the plate
+        let mut c = test_cube((0.0, 0.0, 100.0, 100.0));
+        place(&mut c, 30.0, 40.0, 45.0);
+        let (lo, hi) = c.bounds().unwrap_or_default();
+        assert!(((hi[0] - lo[0]) - 20.0 * 2f64.sqrt()).abs() < 1e-6 && ((lo[0] + hi[0]) / 2.0 - 30.0).abs() < 1e-9);
+        assert!(((lo[1] + hi[1]) / 2.0 - 40.0).abs() < 1e-9 && lo[2].abs() < 1e-12);
+        place(&mut c, f64::NAN, 0.0, 0.0);
+        assert!(c.vertices.iter().flatten().all(|v| v.is_finite()));
+        // arranging three cubes on a 50 mm wide plate: two in a row, one below
+        let cubes: Vec<Part> = (0..3).map(|i| Part { name: format!("c{i}"), ..test_cube((0.0, 0.0, 100.0, 100.0)) }).collect();
+        let spots = arrange(&cubes, (0.0, 0.0, 50.0, 100.0), 5.0);
+        assert_eq!(spots.len(), 3);
+        assert!((spots[0].2 - spots[1].2).abs() < 1e-9 && spots[2].2 < spots[0].2 - 20.0);
         let mut nan = test_cube((0.0, 0.0, 10.0, 10.0));
         nan.vertices[0][0] = f64::NAN;
         assert!(write(&[nan]).is_err());
