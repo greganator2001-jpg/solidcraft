@@ -345,7 +345,7 @@ impl Plate {
     }
 
     /// The point on the plate (z = 0) under a screen point of the 3D view.
-    fn on_plate(cam: &solidcraft_engine::render::Camera, rect: egui::Rect, at: egui::Pos2) -> Option<[f64; 2]> {
+    fn plate_point(cam: &solidcraft_engine::render::Camera, rect: egui::Rect, at: egui::Pos2) -> Option<[f64; 2]> {
         let (o, d) = cam.ray(f64::from(at.x - rect.left()), f64::from(at.y - rect.top()), f64::from(rect.width()), f64::from(rect.height()));
         if d.z.abs() < 1e-9 {
             return None;
@@ -361,7 +361,7 @@ impl Plate {
         let (pressed, down, pos) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos()));
         let Some(pos) = pos else { return false };
         if pressed && free && rect.contains(pos) {
-            let Some(p) = Self::on_plate(cam, rect, pos) else { return false };
+            let Some(p) = Self::plate_point(cam, rect, pos) else { return false };
             // the smallest footprint under the pointer (a small part on a big one)
             let hit = self
                 .placed()
@@ -385,18 +385,13 @@ impl Plate {
             self.dragging = None;
             return false;
         }
-        let Some(p) = Self::on_plate(cam, rect, pos) else { return false };
+        let Some(p) = Self::plate_point(cam, rect, pos) else { return false };
         let to = (from.0 + p[0] - start[0], from.1 + p[1] - start[1], from.2);
         if self.places.get(&name) == Some(&to) {
             return false;
         }
         self.places.insert(name, to);
         true
-    }
-
-    /// A part is being dragged (the view mustn't orbit or select meanwhile).
-    pub fn is_dragging(&self) -> bool {
-        self.dragging.is_some()
     }
 
     /// Nudge the selected part with the arrow keys (1 mm, 10 with Shift) and turn it with R.
