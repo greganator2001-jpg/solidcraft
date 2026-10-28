@@ -931,6 +931,20 @@ fn main() -> eframe::Result {
             if let Some(p) = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k))).filter(|_| !safe_mode) {
                 app.load_prefs(&p);
             }
+            // Fission: the first time Fission starts it switches to its own theme, once; after that
+            // the theme is whatever was chosen in Settings (SolidCraft's settings are shared).
+            if !safe_mode
+                && let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            {
+                let marker = std::path::PathBuf::from(home).join("Fission").join("theme-applied");
+                if !marker.exists() {
+                    app.preferences.theme = "fission".into();
+                    if let Some(dir) = marker.parent() {
+                        std::fs::create_dir_all(dir).ok();
+                    }
+                    std::fs::write(&marker, "Fission switched to its theme once; delete this file to do it again.\n").ok();
+                }
+            }
             if let Some(path) = &theme_file
                 && let Err(e) = solidcraft_ui_egui::prefs::follow_theme_file_for_run(&mut app, path)
             {

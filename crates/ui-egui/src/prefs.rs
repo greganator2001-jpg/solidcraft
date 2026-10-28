@@ -803,9 +803,9 @@ preference_settings! {
     /// Those designs' files, in tab order, as the last quit left them.
     open_designs: Vec<String> = Vec::new(), PAGE_GENERAL;
     /// `dark`, `light` or `system` (follow the operating system), or a theme file's id: a
-    /// built-in one (`gruvbox-dark`, …) or one of `custom_themes` (#2255). Fission starts with its
-    /// own `fission` theme; SolidCraft's Dark is still one click away.
-    theme: String = "fission".into(), PAGE_INTERFACE;
+    /// built-in one (`gruvbox-dark`, …) or one of `custom_themes` (#2255). Fission's app switches
+    /// to its `fission` theme the first time it starts (apps/solidcraft).
+    theme: String = "dark".into(), PAGE_INTERFACE;
     /// The 3D view's colours: the theme's own, or the Light or Dark theme's whatever the window
     /// uses (#4146).
     viewport_theme: crate::theme::ViewportTheme = crate::theme::ViewportTheme::Theme, PAGE_INTERFACE;
