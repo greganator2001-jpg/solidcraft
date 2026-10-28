@@ -11,6 +11,7 @@
 //! Desktop only (it runs programs and opens network connections); the engine leaves it out of the web
 //! build. Nothing here panics: every failure is an `Err(String)` worded for the user.
 
+pub mod gcode;
 pub mod lan;
 pub mod model3mf;
 mod pattern;
