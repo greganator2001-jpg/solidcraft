@@ -73,7 +73,7 @@ impl Toolpaths {
 
     /// The segments of layer `n` alone.
     pub fn layer(&self, n: usize) -> &[Segment] {
-        let start = self.layers.get(n).map_or(0, |l| l.1).min(self.segments.len());
+        let Some(start) = self.layers.get(n).map(|l| l.1.min(self.segments.len())) else { return &[] };
         let end = self.layers.get(n + 1).map_or(self.segments.len(), |l| l.1).min(self.segments.len());
         self.segments.get(start..end.max(start)).unwrap_or(&[])
     }
