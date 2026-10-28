@@ -152,6 +152,10 @@ fn work_folder(s: &Session, cmd: &str) -> Result<PathBuf> {
 }
 
 fn presets(_: &mut Session, p: &Value) -> Result<Value> {
+    presets_of(p)
+}
+
+fn presets_of(p: &Value) -> Result<Value> {
     let cmd = "bambu.presets";
     let exe = profiles::find_studio(None);
     let lib = library(exe.as_deref(), cmd)?;
@@ -173,6 +177,10 @@ fn presets(_: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn printers(_: &mut Session, p: &Value) -> Result<Value> {
+    printers_of(p)
+}
+
+fn printers_of(p: &Value) -> Result<Value> {
     let conf = studio::read_conf(None);
     let mut list = studio::printers(&conf);
     let mut online: Vec<String> = Vec::new();
@@ -247,6 +255,39 @@ fn reply<T: serde::Serialize>(r: T) -> Result<Value> {
 }
 
 fn slice_plate(s: &mut Session, p: &Value) -> Result<Value> {
+    prepare_slice(s, p)?.run()
+}
+
+/// A slice made ready on the window thread (the design's bodies as meshes on the plate), to run
+/// anywhere: Bambu Studio's slicer takes a while.
+pub struct SlicePlan {
+    exe: PathBuf,
+    lib: Library,
+    job: SliceJob,
+    parts: Vec<Part>,
+    folder: PathBuf,
+}
+
+impl SlicePlan {
+    /// Slice (blocks until Bambu Studio is done) → `bambu.slice`'s reply.
+    pub fn run(self) -> Result<Value> {
+        let r = slice::slice(&self.exe, &self.lib, &self.job, &self.parts, &self.folder, SLICE_TIMEOUT).map_err(other)?;
+        reply(sch::SliceResult {
+            file: r.file.to_string_lossy().into_owned(),
+            seconds: r.seconds,
+            time: r.time_text(),
+            grams: r.grams,
+            filaments: used_info(&r.filaments),
+            note: r.note,
+            printer: self.job.printer,
+            process: self.job.process,
+            ..Default::default()
+        })
+    }
+}
+
+/// `bambu.slice` up to the slicing itself: checks its parameters and takes the bodies' meshes.
+pub fn prepare_slice(s: &Session, p: &Value) -> Result<SlicePlan> {
     let cmd = "bambu.slice";
     let exe = studio_exe(cmd)?;
     let lib = library(Some(&exe), cmd)?;
@@ -290,18 +331,25 @@ fn slice_plate(s: &mut Session, p: &Value) -> Result<Value> {
         orient: bool_(p, "orient").unwrap_or(false),
     };
     let folder = work_folder(s, cmd)?;
-    let r = slice::slice(&exe, &lib, &job, &parts, &folder, SLICE_TIMEOUT).map_err(other)?;
-    reply(sch::SliceResult {
-        file: r.file.to_string_lossy().into_owned(),
-        seconds: r.seconds,
-        time: r.time_text(),
-        grams: r.grams,
-        filaments: used_info(&r.filaments),
-        note: r.note,
-        printer: job.printer,
-        process: job.process,
-        ..Default::default()
-    })
+    Ok(SlicePlan { exe, lib, job, parts, folder })
+}
+
+/// A `bambu.*` command that needs nothing from the design (presets, printers, status, print), run
+/// on any thread: the window thread mustn't wait for the network.
+pub fn run_detached(id: &str, p: &Value) -> Result<Value> {
+    match id {
+        "bambu.presets" => presets_of(p),
+        "bambu.printers" => printers_of(p),
+        "bambu.status" => status_of(p),
+        "bambu.print" => print_of(p),
+        _ => Err(EngineError::UnknownCommand(id.to_string())),
+    }
+}
+
+/// The bodies `bambu.slice` prints by default (the shown ones), each with the colour it is shown in.
+pub fn plate_bodies(s: &Session) -> Vec<(String, String)> {
+    let state = s.doc.painted(&s.world_state());
+    state.bodies.iter().filter(|b| !s.visibility.hidden_bodies.contains(&b.name)).map(|b| (b.name.clone(), hex_color(b.body.color()))).collect()
 }
 
 fn open_in_studio(s: &mut Session, p: &Value) -> Result<Value> {
@@ -362,6 +410,10 @@ fn tray_info(t: &Tray) -> sch::TrayInfo {
 }
 
 fn status(_: &mut Session, p: &Value) -> Result<Value> {
+    status_of(p)
+}
+
+fn status_of(p: &Value) -> Result<Value> {
     let cmd = "bambu.status";
     let addr = address(p, cmd)?;
     let pr = Printer::connect(addr, Duration::from_secs(6)).map_err(other)?;
@@ -421,6 +473,10 @@ fn choice(p: &Value, k: &str, last: &Map<String, Value>, cmd: &str) -> Result<St
 }
 
 fn print(_: &mut Session, p: &Value) -> Result<Value> {
+    print_of(p)
+}
+
+fn print_of(p: &Value) -> Result<Value> {
     let cmd = "bambu.print";
     let file = PathBuf::from(str_(p, "file").ok_or_else(|| bad(cmd, "give `file`, a sliced .gcode.3mf (from bambu.slice)"))?);
     let name_ok = file.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase().ends_with(".gcode.3mf")).unwrap_or(false);

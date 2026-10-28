@@ -66,6 +66,10 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
             app.set_status(msg, error);
         }
         "messages" => app.messages.open = true,
+        #[cfg(not(target_arch = "wasm32"))]
+        "fission_print" => crate::bambu_ui::open(app),
+        #[cfg(not(target_arch = "wasm32"))]
+        "fission_note" => crate::claude_note::open(app),
         "report" => {
             let dialog = app.dialog.clone();
             let error = dialog.as_ref().and_then(|d| d.error.clone()).or_else(|| app.preview.error.clone());
@@ -130,6 +134,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context, anchor: egui::Pos2) {
                     for (id, label, icon) in [
                         ("docs", "Documentation", "library"),
                         ("about", "About SolidCraft", "help"),
+                        ("fission_print", "Print with Bambu Lab…", "mesh_export"),
+                        ("fission_note", "Note for Claude…", "edit"),
                         ("shortcuts", "Keyboard Shortcuts", "list"),
                         ("messages", "Messages…", "list"),
                         ("report", "Report an Issue…", "bug_report"),
@@ -139,6 +145,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context, anchor: egui::Pos2) {
                     ]
                     .into_iter()
                     .filter(|(id, ..)| *id != "install_cli" || cfg!(target_os = "macos"))
+                    .filter(|(id, ..)| !id.starts_with("fission_") || cfg!(not(target_arch = "wasm32")))
                     {
                         let item = crate::context_menu::Item::action(id, label, icon).on_if(available(app, id));
                         if crate::context_menu::list_row(ui, &item).is_some() {

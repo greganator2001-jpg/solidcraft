@@ -13,12 +13,16 @@ pub mod access;
 pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
+#[cfg(not(target_arch = "wasm32"))]
+mod bambu_ui;
 pub mod bidi;
 pub mod bom_panel;
 pub mod browser;
 pub mod browser_canvas;
 pub mod browser_prompts;
 pub mod canvas;
+#[cfg(not(target_arch = "wasm32"))]
+mod claude_note;
 pub mod cli_link;
 #[cfg(test)]
 mod colour_tokens_tests;
@@ -302,6 +306,9 @@ pub use control::{ControlRequest, ControlResponse};
 /// How close (radians) the camera must be to a standard axis view for the #2682 mode
 /// (`auto_ortho_faces`) to snap the projection to orthographic. One degree: exact axis views
 /// and Shift-snapped orbits land inside it, free orbiting does not linger in it.
+/// The name shown at the top left and in the window title (Fission, Gregory's fork, shows its own).
+pub const BRAND: &str = "FissionCraft";
+
 pub const ORTHO_FACE_TOLERANCE: f64 = 1.0_f64.to_radians();
 
 /// UI state that automation can read and set (`ui.set`).
@@ -453,6 +460,12 @@ pub struct SolveApp {
     pub(crate) slicer_wait: Option<dialogs_save_mesh::SlicerWait>,
     /// Open with EasyPrint: the upload in flight and the question before the first one.
     pub(crate) easyprint: easyprint_ui::State,
+    /// Fission's Print panel (Bambu Studio slicing, Bambu Lab printers).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bambu: bambu_ui::State,
+    /// Fission's Note for Claude window.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) claude_note: claude_note::State,
     /// A Save or Save As being written on a worker (see [`save_job`]).
     saving: Option<save_job::Saving>,
     pub viewport: viewport::ViewportState,
@@ -669,6 +682,10 @@ impl SolveApp {
             file_picker: None,
             slicer_wait: None,
             easyprint: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            bambu: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            claude_note: Default::default(),
             saving: None,
             viewport: viewport::ViewportState::default(),
             render_workspace,
@@ -1200,6 +1217,12 @@ impl SolveApp {
             return;
         }
         // Repeat Last Command starts the tool it names; it is never the one repeated itself.
+        // Fission: Slice Plate and Print Plate open the Print panel.
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(id, "bambu.slice" | "bambu.print") {
+            bambu_ui::open(self);
+            return;
+        }
         if id == "edit.repeat" {
             self.repeat_last();
             return;
@@ -2018,6 +2041,8 @@ impl SolveApp {
         file_picker::tick(self, ctx);
         dialogs_save_mesh::tick_wait(self, ctx);
         easyprint_ui::tick(self, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        bambu_ui::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
@@ -2327,6 +2352,10 @@ impl SolveApp {
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
         easyprint_ui::show(self, ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        bambu_ui::show(self, ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        claude_note::show(self, ui.ctx());
         linked_source::show_copies(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());

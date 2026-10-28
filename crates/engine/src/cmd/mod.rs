@@ -21,7 +21,7 @@ macro_rules! planned {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod bambu;
+pub mod bambu;
 mod bom;
 mod browser;
 pub(crate) mod clearance;

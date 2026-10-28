@@ -100,6 +100,8 @@ pub const SECTIONS: &[Section] = &[
     },
     Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
+    // Fission: slice with Bambu Studio and print on a Bambu Lab printer.
+    Section { tab: "MODEL", panel: "PRINT", promoted: 2, ids: &["bambu.slice", "bambu.open_in_studio"] },
     // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
     Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
