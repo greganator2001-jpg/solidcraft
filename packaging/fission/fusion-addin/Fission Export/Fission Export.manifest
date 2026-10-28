@@ -1,0 +1,10 @@
+{
+	"autodeskProduct": "Fusion360",
+	"type": "script",
+	"author": "Fission",
+	"description": {
+		"": "Save the open design with its timeline (sketches, features, parameters) as a .ffx file you can open in Fission."
+	},
+	"supportedOS": "windows|mac",
+	"editEnabled": true
+}

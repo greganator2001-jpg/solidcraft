@@ -53,11 +53,23 @@ impl Inference {
 
 thread_local! {
     static PENDING: RefCell<Option<Inference>> = const { RefCell::new(None) };
+    /// Dotted alignment guides of the point being placed (any sketch tool).
+    static GUIDES: RefCell<Vec<(Vec2, Vec2)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Forget the current inference (another snap won, or the tool ended).
 pub fn clear() {
     PENDING.with(|p| *p.borrow_mut() = None);
+    GUIDES.with(|g| g.borrow_mut().clear());
+}
+
+/// The point being placed lines up with these (dotted guides, sketch coordinates).
+pub fn set_guides(guides: Vec<(Vec2, Vec2)>) {
+    GUIDES.with(|g| *g.borrow_mut() = guides);
+}
+
+pub fn guides() -> Vec<(Vec2, Vec2)> {
+    GUIDES.with(|g| g.borrow().clone())
 }
 
 pub fn current() -> Option<Inference> {
@@ -237,16 +249,28 @@ pub fn commit(app: &mut SolveApp, line: &str, end: Vec2) {
 
 /// The dashed guide of the current inference (its label is the snap hint) (while the Line tool is active).
 pub fn show(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
-    if app.tool.as_ref().is_none_or(|t| t.cmd != "sketch.line") {
+    if app.tool.is_none() || app.viewport.point_drag.is_some() {
         return;
     }
-    let Some(i) = current() else { return };
     let st = app.session.world_state();
     let Some(ss) = app.session.active_sketch.and_then(|s| st.sketch(s)) else { return };
     let to = |p: Vec2| proj.to_screen(ss.plane.to_world(p));
     let tk = Tokens::get();
+    let stroke = Stroke::new(1.0, tk.rubber_band);
+    // Lining up with points, line middles and the origin: a dotted guide from each, and a small
+    // ring on what it lines up with.
+    for (a, b) in guides() {
+        if let (Some(sa), Some(sb)) = (to(a), to(b)) {
+            painter.add(Shape::dashed_line(&[sa, sb], stroke, 3.0, 3.0));
+            painter.circle_stroke(sa, 3.0, stroke);
+        }
+    }
+    if app.tool.as_ref().is_none_or(|t| t.cmd != "sketch.line") {
+        return;
+    }
+    let Some(i) = current() else { return };
     if let (Some(a), Some(b)) = (to(i.guide.0), to(i.guide.1)) {
-        painter.add(Shape::dashed_line(&[a, b], Stroke::new(1.0, tk.rubber_band), 5.0, 4.0));
+        painter.add(Shape::dashed_line(&[a, b], stroke, 5.0, 4.0));
     }
 }
 

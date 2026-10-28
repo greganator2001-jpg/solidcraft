@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use egui::Color32;
 use solidcraft_engine::cmd::bambu::gcode::{ROLES, Toolpaths};
-use solidcraft_engine::cmd::bambu::{Part, arrange, centre_on_bed, place};
+use solidcraft_engine::cmd::bambu::{Part, arrange, best_bottom, centre_on_bed, place_with};
 use solidcraft_engine::geom::{Aabb3, Vec3};
 
 use crate::gpu::GpuScene;
@@ -19,11 +19,25 @@ use crate::ui_kit;
 
 /// Most toolpath segments drawn at once (the layers below are left out first).
 const DRAW_BUDGET: usize = 1_500_000;
+/// Most toolpath segments drawn as solid beads (the layers below are drawn as lines).
+const BEAD_BUDGET: usize = 160_000;
 /// Gap between parts when laying them out (mm).
 const ARRANGE_GAP: f64 = 6.0;
 
 /// A part's place on the plate: the middle of its footprint (mm) and its turn about Z (degrees).
-pub type Place = (f64, f64, f64);
+pub type Place = solidcraft_engine::cmd::bambu::Placement;
+
+/// What a click on the plate does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tool {
+    /// Pick and drag parts.
+    #[default]
+    Move,
+    /// Click a face of a part to put it down on the plate.
+    Lay,
+    /// Click two points to measure between them.
+    Measure,
+}
 
 #[derive(Default)]
 pub struct Plate {
@@ -51,19 +65,54 @@ pub struct Plate {
     pub fitted: bool,
     pub error: Option<String>,
     /// The X, Y and turn fields as typed, for the part and place they were filled from.
-    edit: Option<(String, [String; 3], Place)>,
+    edit: Option<(String, [String; 4], Place)>,
+    pub tool: Tool,
+    /// Measure's points (on a part or the plate), and the distance shown.
+    pub measure: Vec<[f64; 3]>,
+    /// The right-click menu: which part, where on screen.
+    pub menu: Option<(String, egui::Pos2)>,
 }
 
 fn rgba(c: Color32) -> [u8; 4] {
     c.to_array()
 }
 
-fn hex(c: &str) -> Color32 {
+/// '#rrggbb' (or '#rrggbbaa'), a filament's or a line type's colour (data, not the theme) → colour;
+/// the theme's dim text colour when it isn't one.
+pub(crate) fn hex(c: &str) -> Color32 {
     let h = c.trim().trim_start_matches('#');
     let n = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
     match (n(0), n(2), n(4)) {
         (Some(r), Some(g), Some(b)) => Color32::from_rgb(r, g, b),
-        _ => Color32::GRAY,
+        _ => Tokens::get().text_dim,
+    }
+}
+
+/// One extruded move as the printer lays it: a strip `width` wide whose top is at the move's height,
+/// `height` deep (its top and two sides).
+fn bead(sc: &mut GpuScene, a: [f32; 3], b: [f32; 3], width: f32, height: f32, c: crate::gpu::PaletteIndex) {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if !(len > 1e-6 && len.is_finite()) {
+        return;
+    }
+    let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
+    let up = |p: [f32; 3], s: f32| [p[0] + nx * s, p[1] + ny * s, p[2]];
+    let down = |p: [f32; 3], s: f32| [p[0] + nx * s, p[1] + ny * s, p[2] - height];
+    let (al, ar, bl, br) = (up(a, 1.0), up(a, -1.0), up(b, 1.0), up(b, -1.0));
+    let top = [0.0, 0.0, 1.0];
+    for p in [al, ar, br, al, br, bl] {
+        sc.tri(p, top, c);
+    }
+    let side = [nx / (width / 2.0), ny / (width / 2.0), 0.0];
+    let (dal, dbl) = (down(a, 1.0), down(b, 1.0));
+    for p in [al, bl, dbl, al, dbl, dal] {
+        sc.tri(p, side, c);
+    }
+    let other = side.map(|v| -v);
+    let (dar, dbr) = (down(a, -1.0), down(b, -1.0));
+    for p in [ar, dar, dbr, ar, dbr, br] {
+        sc.tri(p, other, c);
     }
 }
 
@@ -85,7 +134,7 @@ impl Plate {
         centre_on_bed(&mut centred, bed);
         for p in &centred {
             if let Some((lo, hi)) = p.bounds() {
-                self.places.entry(p.name.clone()).or_insert(((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, 0.0));
+                self.places.entry(p.name.clone()).or_insert(Place { x: (lo[0] + hi[0]) / 2.0, y: (lo[1] + hi[1]) / 2.0, ..Place::default() });
             }
         }
         let names: BTreeSet<&String> = self.parts.iter().map(|p| &p.name).collect();
@@ -112,8 +161,8 @@ impl Plate {
             .filter(|p| !self.off.contains(&p.name))
             .map(|p| {
                 let mut p = p.clone();
-                if let Some((x, y, r)) = self.places.get(&p.name) {
-                    place(&mut p, *x, *y, *r);
+                if let Some(at) = self.places.get(&p.name) {
+                    place_with(&mut p, at);
                 }
                 p
             })
@@ -129,7 +178,7 @@ impl Plate {
         let placed = self.placed();
         for (name, x, y) in arrange(&placed, bed, ARRANGE_GAP) {
             if let Some(p) = self.places.get_mut(&name) {
-                (p.0, p.1) = (x, y);
+                (p.x, p.y) = (x, y);
             }
         }
     }
@@ -182,10 +231,12 @@ impl Plate {
         self.key.hash(&mut h);
         preview.hash(&mut h);
         [bed.0, bed.1, bed.2, bed.3].map(f64::to_bits).hash(&mut h);
-        for (n, (x, y, r)) in &self.places {
+        for (n, at) in &self.places {
             n.hash(&mut h);
-            [x, y, r].map(|v| v.to_bits()).hash(&mut h);
+            [at.x, at.y, at.turn, at.scale].map(f64::to_bits).hash(&mut h);
+            at.orient.iter().flatten().map(|v| v.to_bits()).for_each(|b| b.hash(&mut h));
         }
+        self.measure.iter().flatten().map(|v| v.to_bits()).for_each(|b| b.hash(&mut h));
         self.selected.hash(&mut h);
         self.off.hash(&mut h);
         colours.hash(&mut h);
@@ -204,8 +255,7 @@ impl Plate {
         let mut sc = GpuScene::default();
         // the plate: a thin sheet with a 10 mm grid and its edge
         let (x0, y0, x1, y1) = (bed.0 as f32, bed.1 as f32, bed.2 as f32, bed.3 as f32);
-        let mut sheet = t.panel_header;
-        sheet = Color32::from_rgba_unmultiplied(sheet.r(), sheet.g(), sheet.b(), 200);
+        let sheet = t.panel_header.gamma_multiply(0.8);
         let fill = sc.color(rgba(sheet));
         let z = -0.05f32;
         for p in [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y0, z], [x1, y1, z], [x0, y1, z]] {
@@ -237,12 +287,17 @@ impl Plate {
                 sc.line([c[0], c[1], 0.0], [c[0], c[1], top], dim, 1.0, false);
             }
         }
+        if self.measure.len() == 2 {
+            let c = sc.color(rgba(t.accent));
+            let (a, b) = (self.measure[0].map(|x| x as f32), self.measure[1].map(|x| x as f32));
+            sc.line(a, b, c, 3.0, true);
+        }
         if preview {
             self.toolpath_scene(&mut sc, filaments);
         } else {
             for p in self.placed() {
                 let picked = self.selected.as_deref() == Some(p.name.as_str());
-                let c = if picked { t.accent } else { colours.get(&p.name).map(|c| hex(c)).unwrap_or(Color32::GRAY) };
+                let c = if picked { t.accent } else { colours.get(&p.name).map_or(t.text_dim, |c| hex(c)) };
                 let c = sc.color(rgba(c));
                 for tri in &p.triangles {
                     let v = tri.map(|i| p.vertices.get(i as usize).copied().unwrap_or_default().map(|x| x as f32));
@@ -264,17 +319,25 @@ impl Plate {
         let Some(tp) = &self.toolpaths else { return };
         let colours: Vec<_> = ROLES.iter().map(|(_, c)| sc.color(rgba(hex(c)))).collect();
         let by_tool: Vec<_> = filaments.iter().map(|c| sc.color(rgba(hex(c)))).collect();
-        let grey = sc.color(rgba(Color32::GRAY));
+        let grey = sc.color(rgba(Tokens::get().text_dim));
         let top = self.layer.min(tp.layers.len().saturating_sub(1));
-        // from the top layer down, until the budget is spent
+        // from the top layer down, until the budget is spent: the top layers as solid beads (each
+        // move a flat-topped strip of its width and layer height, like the print), the rest as lines
         let mut budget = DRAW_BUDGET;
+        let mut beads = BEAD_BUDGET;
         for n in (0..=top).rev() {
             let segs = tp.layer(n);
             if segs.len() > budget {
                 break;
             }
             budget -= segs.len();
-            let width = if n == top { 3.0 } else { 2.0 };
+            let z_below = n.checked_sub(1).and_then(|m| tp.layers.get(m)).map_or(0.0, |l| l.0);
+            let z_top = tp.layers.get(n).map_or(0.0, |l| l.0);
+            let height = (z_top - z_below).clamp(0.04, 1.0);
+            let solid = segs.len() <= beads;
+            if solid {
+                beads -= segs.len();
+            }
             for s in segs {
                 if self.hidden.contains(&s.role) {
                     continue;
@@ -284,7 +347,11 @@ impl Plate {
                 } else {
                     colours.get(usize::from(s.role)).copied().unwrap_or(grey)
                 };
-                sc.line(s.a, s.b, c, width, false);
+                if solid {
+                    bead(sc, s.a, s.b, s.width, height, c);
+                } else {
+                    sc.line(s.a, s.b, c, if n == top { 3.0 } else { 2.0 }, false);
+                }
             }
         }
     }
@@ -297,51 +364,130 @@ impl Plate {
         b
     }
 
-    /// Under the selected part in the Objects list: where it sits and its turn, with Turn 90°,
-    /// Centre and Lay out all. True when something moved.
+    /// Under the selected part in the Objects list (Bambu Studio's Object manipulation): where it
+    /// sits, its turn and its scale, with Turn 90°, Tip forward / sideways, Lay flat and Centre.
+    /// True when something moved.
     pub fn placement_controls(&mut self, ui: &mut egui::Ui, bed: (f64, f64, f64, f64)) -> bool {
         let Some(name) = self.selected.clone() else { return false };
         if self.locked {
             ui_kit::text(ui, tr("fission.plate.locked_note"), ui_kit::Text::Note("fission_plate_locked"));
             return false;
         }
-        let Some(&(x, y, r)) = self.places.get(&name) else { return false };
+        let Some(current) = self.places.get(&name).copied() else { return false };
         let mut moved = false;
-        let current = (x, y, r);
+        let shown = |p: &Place| [format!("{:.1}", p.x), format!("{:.1}", p.y), format!("{:.0}", p.turn), format!("{:.0}", p.scale * 100.0)];
         if self.edit.as_ref().is_none_or(|(n, _, at)| *n != name || *at != current) {
-            self.edit = Some((name.clone(), [format!("{x:.1}"), format!("{y:.1}"), format!("{r:.0}")], current));
+            self.edit = Some((name.clone(), shown(&current), current));
         }
         if let Some((_, fields, at)) = self.edit.as_mut() {
-            for (field, label) in fields.iter_mut().zip(["fission.plate.x", "fission.plate.y", "fission.plate.rotation"]) {
+            for (field, label) in fields.iter_mut().zip(["fission.plate.x", "fission.plate.y", "fission.plate.rotation", "fission.plate.scale"]) {
                 ui_kit::text_row(ui, tr(label), field, "");
             }
             let parsed: Vec<Option<f64>> = fields.iter().map(|f| f.trim().parse::<f64>().ok().filter(|v| v.is_finite())).collect();
-            if let [Some(nx), Some(ny), Some(nr)] = parsed[..] {
-                let typed = (nx, ny, nr.rem_euclid(360.0));
-                let shown = (format!("{x:.1}"), format!("{y:.1}"), format!("{r:.0}"));
+            if let [Some(nx), Some(ny), Some(nr), Some(ns)] = parsed[..]
+                && ns > 0.0
+            {
+                let typed = Place { x: nx, y: ny, turn: nr.rem_euclid(360.0), scale: (ns / 100.0).clamp(0.001, 1000.0), ..current };
                 // only a real change of what the fields show moves the part (not the rounding)
-                if (format!("{nx:.1}"), format!("{ny:.1}"), format!("{nr:.0}")) != shown {
+                if shown(&typed) != shown(&current) {
                     *at = typed;
                     self.places.insert(name.clone(), typed);
                     moved = true;
                 }
             }
         }
-        ui.horizontal(|ui| {
-            if ui_kit::button(ui, tr("fission.plate.turn"), ui_kit::Button::Small).clicked()
-                && let Some(p) = self.places.get_mut(&name)
-            {
-                p.2 = (p.2 + 90.0).rem_euclid(360.0);
-                moved = true;
+        let size = self.placed().iter().find(|p| p.name == name).and_then(Part::bounds).map(|(lo, hi)| [0, 1, 2].map(|i| hi[i] - lo[i]));
+        if let Some(sz) = size {
+            ui_kit::text(ui, &format("fission.plate.size", &[("x", &format!("{:.1}", sz[0])), ("y", &format!("{:.1}", sz[1])), ("z", &format!("{:.1}", sz[2]))]), ui_kit::Text::Note("fission_plate_size"));
+        }
+        let mut change: Option<fn(&mut Place)> = None;
+        ui.horizontal_wrapped(|ui| {
+            if ui_kit::button(ui, tr("fission.plate.turn"), ui_kit::Button::Small).clicked() {
+                change = Some(|p| p.turn = (p.turn + 90.0).rem_euclid(360.0));
+            }
+            if ui_kit::button(ui, tr("fission.plate.tip_x"), ui_kit::Button::Small).clicked() {
+                change = Some(|p| p.tip(0, 90.0));
+            }
+            if ui_kit::button(ui, tr("fission.plate.tip_y"), ui_kit::Button::Small).clicked() {
+                change = Some(|p| p.tip(1, 90.0));
+            }
+            if ui_kit::button(ui, tr("fission.plate.lay_flat"), ui_kit::Button::Small).clicked() {
+                moved |= self.auto_orient(Some(&name));
             }
             if ui_kit::button(ui, tr("fission.plate.centre"), ui_kit::Button::Small).clicked()
                 && let Some(p) = self.places.get_mut(&name)
             {
-                (p.0, p.1) = ((bed.0 + bed.2) / 2.0, (bed.1 + bed.3) / 2.0);
+                (p.x, p.y) = ((bed.0 + bed.2) / 2.0, (bed.1 + bed.3) / 2.0);
                 moved = true;
             }
         });
+        if let Some(f) = change
+            && let Some(p) = self.places.get_mut(&name)
+        {
+            f(p);
+            moved = true;
+        }
         moved
+    }
+
+    /// Bambu Studio's Auto orient: each part (`only`, or every one) goes down on its biggest flat face.
+    pub fn auto_orient(&mut self, only: Option<&str>) -> bool {
+        if self.locked {
+            return false;
+        }
+        let mut moved = false;
+        for p in self.placed() {
+            if only.is_some_and(|o| o != p.name) {
+                continue;
+            }
+            let n = best_bottom(&p);
+            if let Some(at) = self.places.get_mut(&p.name) {
+                at.lay_on(n);
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    /// The part and point (and the face's outward direction) under a screen point, nearest first.
+    fn hit(&self, cam: &solidcraft_engine::render::Camera, rect: egui::Rect, at: egui::Pos2) -> Option<(String, [f64; 3], [f64; 3])> {
+        let (o, d) = cam.ray(f64::from(at.x - rect.left()), f64::from(at.y - rect.top()), f64::from(rect.width()), f64::from(rect.height()));
+        let (o, d) = ([o.x, o.y, o.z], [d.x, d.y, d.z]);
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let mut best: Option<(f64, String, [f64; 3], [f64; 3])> = None;
+        for p in self.placed() {
+            for t in &p.triangles {
+                let Some(v) = t.iter().map(|&i| p.vertices.get(i as usize).copied()).collect::<Option<Vec<[f64; 3]>>>() else { continue };
+                // Möller–Trumbore
+                let (e1, e2) = (sub(v[1], v[0]), sub(v[2], v[0]));
+                let h = cross(d, e2);
+                let a = dot(e1, h);
+                if a.abs() < 1e-12 {
+                    continue;
+                }
+                let f = 1.0 / a;
+                let s = sub(o, v[0]);
+                let u = f * dot(s, h);
+                if !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                let q = cross(s, e1);
+                let w = f * dot(d, q);
+                if w < 0.0 || u + w > 1.0 {
+                    continue;
+                }
+                let dist = f * dot(e2, q);
+                if dist > 1e-9 && best.as_ref().is_none_or(|b| dist < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    let point = [o[0] + d[0] * dist, o[1] + d[1] * dist, o[2] + d[2] * dist];
+                    best = Some((dist, p.name.clone(), point, n.map(|x| x / l)));
+                }
+            }
+        }
+        best.map(|(_, n, p, normal)| (n, p, normal))
     }
 
     /// The point on the plate (z = 0) under a screen point of the 3D view.
@@ -351,34 +497,64 @@ impl Plate {
             return None;
         }
         let t = -o.z / d.z;
-        (t.is_finite() && t > 0.0).then(|| [o.x + d.x * t, o.y + d.y * t])
+        (t.is_finite() && t > 0.0).then_some([o.x + d.x * t, o.y + d.y * t])
     }
 
     /// Drag parts on the plate with the mouse (Prepare): a press on a part picks it, dragging moves
     /// it, releasing puts it down. `free`: the pointer is over the 3D view, not a panel. True when a
     /// part moved.
     pub fn drag(&mut self, ctx: &egui::Context, rect: egui::Rect, cam: &solidcraft_engine::render::Camera, free: bool) -> bool {
-        let (pressed, down, pos) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos()));
+        let (pressed, down, pos, secondary) =
+            ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos(), i.pointer.secondary_clicked()));
         let Some(pos) = pos else { return false };
-        if pressed && free && rect.contains(pos) {
-            let Some(p) = Self::plate_point(cam, rect, pos) else { return false };
-            // the smallest footprint under the pointer (a small part on a big one)
-            let hit = self
-                .placed()
-                .iter()
-                .filter_map(|part| part.bounds().map(|(lo, hi)| (part.name.clone(), lo, hi)))
-                .filter(|(_, lo, hi)| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1])
-                .min_by(|a, b| ((a.2[0] - a.1[0]) * (a.2[1] - a.1[1])).total_cmp(&((b.2[0] - b.1[0]) * (b.2[1] - b.1[1]))))
-                .map(|(n, ..)| n);
-            if let Some(name) = hit {
+        // right-click a part: its menu
+        if secondary && free && rect.contains(pos) {
+            if let Some((name, ..)) = self.hit(cam, rect, pos) {
                 self.selected = Some(name.clone());
-                if !self.locked
-                    && let Some(place) = self.places.get(&name)
-                {
-                    self.dragging = Some((name, p, *place));
-                }
+                self.menu = Some((name, pos));
             }
             return false;
+        }
+        if pressed && free && rect.contains(pos) {
+            self.menu = None;
+            let hit = self.hit(cam, rect, pos);
+            match self.tool {
+                Tool::Measure => {
+                    let point = hit.map(|h| h.1).or_else(|| Self::plate_point(cam, rect, pos).map(|p| [p[0], p[1], 0.0]));
+                    if let Some(point) = point {
+                        if self.measure.len() >= 2 {
+                            self.measure.clear();
+                        }
+                        self.measure.push(point);
+                    }
+                    return false;
+                }
+                Tool::Lay => {
+                    let Some((name, _, normal)) = hit else { return false };
+                    self.selected = Some(name.clone());
+                    if self.locked {
+                        return false;
+                    }
+                    if let Some(at) = self.places.get_mut(&name) {
+                        at.lay_on(normal);
+                    }
+                    return true;
+                }
+                Tool::Move => {
+                    let Some((name, ..)) = hit else {
+                        self.selected = None;
+                        return false;
+                    };
+                    let Some(p) = Self::plate_point(cam, rect, pos) else { return false };
+                    self.selected = Some(name.clone());
+                    if !self.locked
+                        && let Some(place) = self.places.get(&name)
+                    {
+                        self.dragging = Some((name, p, *place));
+                    }
+                    return false;
+                }
+            }
         }
         let Some((name, start, from)) = self.dragging.clone() else { return false };
         if !down {
@@ -386,7 +562,7 @@ impl Plate {
             return false;
         }
         let Some(p) = Self::plate_point(cam, rect, pos) else { return false };
-        let to = (from.0 + p[0] - start[0], from.1 + p[1] - start[1], from.2);
+        let to = Place { x: from.x + p[0] - start[0], y: from.y + p[1] - start[1], ..from };
         if self.places.get(&name) == Some(&to) {
             return false;
         }
@@ -426,9 +602,9 @@ impl Plate {
             return false;
         }
         if let Some(p) = self.places.get_mut(&name) {
-            p.0 += dx;
-            p.1 += dy;
-            p.2 = (p.2 + dr).rem_euclid(360.0);
+            p.x += dx;
+            p.y += dy;
+            p.turn = (p.turn + dr).rem_euclid(360.0);
         }
         true
     }
@@ -523,7 +699,7 @@ mod tests {
             filament: 1,
         };
         let mut plate = Plate { parts: vec![cube], ..Default::default() };
-        plate.places.insert("Cube".into(), (50.0, 50.0, 90.0));
+        plate.places.insert("Cube".into(), Place { x: 50.0, y: 50.0, turn: 90.0, ..Place::default() });
         let placed = plate.placed();
         let (lo, hi) = placed[0].bounds().unwrap_or_default();
         assert!(((lo[0] + hi[0]) / 2.0 - 50.0).abs() < 1e-9 && ((lo[1] + hi[1]) / 2.0 - 50.0).abs() < 1e-9);
@@ -531,7 +707,7 @@ mod tests {
         let sc = plate.scene(false, bed, 100.0, &BTreeMap::new(), &[]);
         assert!(!sc.tris.is_empty() && !sc.trans.is_empty() && !sc.lines.is_empty());
         assert!(plate.off_plate(bed).is_empty());
-        plate.places.insert("Cube".into(), (99.0, 50.0, 0.0));
+        plate.places.insert("Cube".into(), Place { x: 99.0, y: 50.0, ..Place::default() });
         assert_eq!(plate.off_plate(bed), vec!["Cube".to_string()]);
         plate.arrange(bed);
         assert!(plate.off_plate(bed).is_empty());

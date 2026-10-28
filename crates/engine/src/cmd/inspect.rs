@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use serde_json::{Value, json};
+use solidcraft_geom::Vec3;
 use solidcraft_sketch::CurveKind;
 
 use super::CommandSpec;
@@ -372,13 +373,56 @@ fn model_edges(s: &mut Session, p: &Value) -> Result<Value> {
     let b = body_of(&st, p, "model.edges")?;
     let tol = (b.body.size() * 2e-3).max(1e-3);
     let names = solidcraft_doc::naming::edge_names(b);
+    let seams = b.body.seam_edges();
     let edges: Vec<Value> = b
         .body
         .edges(tol)?
         .iter()
-        .map(|e| json!({"index": e.index, "name": names.get(e.index), "mid": e.mid, "length": e.length, "start": e.points.first(), "end": e.points.last()}))
+        .map(|e| {
+            let mut v = json!({"index": e.index, "name": names.get(e.index), "mid": e.mid, "length": e.length, "start": e.points.first(), "end": e.points.last()});
+            // A seam splitting one smooth surface (other CAD programs show no edge there).
+            if seams.get(e.index).copied().unwrap_or(false)
+                && let Some(o) = v.as_object_mut()
+            {
+                o.insert("seam".into(), json!(true));
+            }
+            // the edge's box, and its circle when its points lie on one (Fission's Fusion scripts read both)
+            if let (Some(o), Some(first)) = (v.as_object_mut(), e.points.first()) {
+                let (lo, hi) = e.points.iter().fold((*first, *first), |(lo, hi), p| {
+                    (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+                });
+                o.insert("bbox".into(), json!([lo, hi]));
+                if let Some((centre, radius, normal)) = edge_circle(&e.points, tol) {
+                    o.insert("circle".into(), json!({"center": centre, "radius": radius, "normal": normal}));
+                }
+            }
+            v
+        })
         .collect();
     Ok(json!({"body": b.name, "edges": edges}))
+}
+
+/// The circle a polyline lies on (within `tol`): centre, radius, normal. None for a straight or
+/// non-circular edge.
+fn edge_circle(points: &[Vec3], tol: f64) -> Option<(Vec3, f64, Vec3)> {
+    if points.len() < 3 {
+        return None;
+    }
+    let (a, b, c) = (*points.first()?, points[points.len() / 3], points[2 * points.len() / 3]);
+    let (ab, ac) = (b - a, c - a);
+    let n = ab.cross(ac);
+    let nn = n.dot(n);
+    if nn < 1e-18 {
+        return None;
+    }
+    // circumcentre of a, b, c
+    let centre = a + (n.cross(ab) * ac.dot(ac) + ac.cross(n) * ab.dot(ab)) * (1.0 / (2.0 * nn));
+    let r = (a - centre).len();
+    if !(r.is_finite() && r > tol) {
+        return None;
+    }
+    let normal = n.normalized()?;
+    points.iter().all(|p| ((*p - centre).len() - r).abs() <= tol && (*p - centre).dot(normal).abs() <= tol).then_some((centre, r, normal))
 }
 
 fn model_faces(s: &mut Session, p: &Value) -> Result<Value> {

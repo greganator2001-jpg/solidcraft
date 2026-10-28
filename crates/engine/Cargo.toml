@@ -50,6 +50,8 @@ web-time = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Fission: printing with Bambu Studio and Bambu Lab printers on the network.
 solidcraft-bambu = { workspace = true }
+# Fission: reading .ffx files (Fusion designs saved by the Fission Export script).
+zip = { workspace = true }
 
 [dev-dependencies]
 # Model-cache tests also run in a source tarball build (no git commit).

@@ -29,6 +29,10 @@ enum Job {
     Status,
     Sync,
     Control,
+    Discover,
+    SavePrinter,
+    TestPrinter,
+    Filament,
 }
 
 /// The Bring to plate window: which shown bodies go on the plate, on which filament, and each
@@ -54,6 +58,19 @@ enum Act {
     Bring,
     RemoveFromPlate,
     Export,
+    Printers,
+    EditFilament(usize),
+}
+
+/// The Printers window: add a printer by its details, find printers on the network, test one.
+#[derive(Default)]
+struct PrintersForm {
+    serial: String,
+    ip: String,
+    code: String,
+    name: String,
+    found: Vec<Value>,
+    note: Option<(String, bool)>,
 }
 
 const SEND_CHOICES: [&str; 3] = ["auto", "on", "off"];
@@ -66,7 +83,29 @@ const MAX_SLOTS: usize = 16;
 struct Slot {
     preset: usize,
     color: String,
+    /// Filament settings changed for this print (Bambu Studio's keys, as text).
+    overrides: BTreeMap<String, String>,
 }
+
+/// The Filament window: one slot's main settings, the preset's and the changed ones.
+struct FilamentForm {
+    slot: usize,
+    base: BTreeMap<String, String>,
+    edits: BTreeMap<String, String>,
+}
+
+/// The filament settings the Filament window shows, with their labels.
+const FILAMENT_FIELDS: [(&str, &str); 9] = [
+    ("nozzle_temperature", "fission.fil.nozzle"),
+    ("nozzle_temperature_initial_layer", "fission.fil.nozzle_first"),
+    ("textured_plate_temp", "fission.fil.bed_textured"),
+    ("hot_plate_temp", "fission.fil.bed_smooth"),
+    ("cool_plate_temp", "fission.fil.bed_cool"),
+    ("fan_max_speed", "fission.fil.fan_max"),
+    ("fan_min_speed", "fission.fil.fan_min"),
+    ("filament_flow_ratio", "fission.fil.flow"),
+    ("filament_max_volumetric_speed", "fission.fil.volumetric"),
+];
 
 /// The process settings shown, as text, by Bambu Studio's key.
 #[derive(Clone, Debug, Default)]
@@ -96,6 +135,12 @@ pub struct State {
     pending: Option<Act>,
     /// The plate in the 3D view: the parts where they'll print, the sliced toolpaths.
     pub(crate) plate: crate::bambu_plate::Plate,
+    /// The Filament window, while it's open.
+    filament_form: Option<FilamentForm>,
+    /// The Printers window, while it's open.
+    printers_form: Option<PrintersForm>,
+    /// Bambu Studio's picture of the chosen printer, and which file it came from.
+    printer_picture: Option<(String, egui::TextureHandle)>,
     /// The Bring to plate window, while it's open.
     bring: Option<Bring>,
     /// Bring to plate has been asked since the tab was entered.
@@ -149,14 +194,9 @@ fn number(v: &Value, key: &str) -> f64 {
     v.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// '#rrggbb' (or '#rrggbbaa') → colour; grey when it isn't one.
+/// '#rrggbb' (or '#rrggbbaa') → colour; the theme's dim text colour when it isn't one.
 fn colour(hex: &str) -> Color32 {
-    let h = hex.trim().trim_start_matches('#');
-    let n = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
-    match (n(0), n(2), n(4)) {
-        (Some(r), Some(g), Some(b)) => Color32::from_rgb(r, g, b),
-        _ => Color32::GRAY,
-    }
+    crate::bambu_plate::hex(hex)
 }
 
 impl State {
@@ -300,6 +340,11 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         match (job, answer) {
             // a status read in the background that fails just shows as not connected
             (Job::Status, Err(_)) => app.bambu.status = None,
+            (Job::Discover | Job::SavePrinter | Job::TestPrinter, Err(e)) if app.bambu.printers_form.is_some() => {
+                if let Some(f) = app.bambu.printers_form.as_mut() {
+                    f.note = Some((e, true));
+                }
+            }
             (_, Err(e)) => {
                 app.bambu.message = Some((e.clone(), true));
                 app.set_status(e, true);
@@ -334,6 +379,29 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                 app.bambu.status = Some(v);
             }
             (Job::Control, Ok(_)) => app.bambu.status_at = 0.0,
+            (Job::Filament, Ok(v)) => {
+                if let Some(f) = app.bambu.filament_form.as_mut() {
+                    f.base = v.get("values").and_then(Value::as_object).map(|o| o.iter().map(|(k, v)| (k.clone(), text_of(v))).collect()).unwrap_or_default();
+                }
+            }
+            (Job::Discover, Ok(v)) => {
+                if let Some(f) = app.bambu.printers_form.as_mut() {
+                    f.found = v.get("found").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let n = f.found.len().to_string();
+                    f.note = Some((format("fission.printers.found", &[("n", &n)]), false));
+                }
+            }
+            (Job::SavePrinter, Ok(_)) => {
+                if let Some(f) = app.bambu.printers_form.as_mut() {
+                    f.note = Some((tr("fission.printers.saved").to_string(), false));
+                }
+                app.bambu.detached(Job::Printers, "bambu.printers", json!({"discover": true, "wait": 3}));
+            }
+            (Job::TestPrinter, Ok(v)) => {
+                if let Some(f) = app.bambu.printers_form.as_mut() {
+                    f.note = Some((format("fission.printers.answered", &[("status", text(&v, "summary"))]), false));
+                }
+            }
         }
     }
     // keep the chosen printer's status fresh while the workspace is open
@@ -366,7 +434,7 @@ fn took_presets(s: &mut State, v: Value) {
         let colour_of = |i: usize| v.get("filament_info").and_then(|a| a.get(i)).map(|f| text(f, "color").to_string()).unwrap_or_default();
         let n = s.slots.len().max(1);
         s.slots = (0..n)
-            .map(|k| Slot { preset: pla, color: s.slots.get(k).map(|o| o.color.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| colour_of(pla)) })
+            .map(|k| Slot { preset: pla, color: s.slots.get(k).map(|o| o.color.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| colour_of(pla)), ..Slot::default() })
             .collect();
         s.bed = 0;
         s.sliced = None;
@@ -394,13 +462,17 @@ fn synced(s: &mut State, status: &Value) {
     s.slots = trays
         .iter()
         .take(MAX_SLOTS)
-        .map(|t| Slot { preset: filaments.iter().position(|f| f == text(t, "preset")).unwrap_or(0), color: text(t, "color").to_string() })
+        .map(|t| Slot { preset: filaments.iter().position(|f| f == text(t, "preset")).unwrap_or(0), color: text(t, "color").to_string(), ..Slot::default() })
         .collect();
     s.sliced = None;
     s.message = Some((format("fission.bambu.synced", &[("n", &s.slots.len().to_string())]), false));
 }
 
 fn picture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    picture_named(ctx, path, "fission_plate_picture")
+}
+
+fn picture_named(ctx: &egui::Context, path: &str, name: &str) -> Option<egui::TextureHandle> {
     if path.is_empty() {
         return None;
     }
@@ -408,7 +480,7 @@ fn picture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
     let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
     let colour = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    Some(ctx.load_texture("fission_plate_picture", colour, egui::TextureOptions::LINEAR))
+    Some(ctx.load_texture(name, colour, egui::TextureOptions::LINEAR))
 }
 
 /// The printer's plate [x0, y0, x1, y1] (a 256 mm plate until the presets are read).
@@ -471,7 +543,7 @@ fn slice_params(app: &SolveApp, bodies: &[(String, String)]) -> Value {
     let s = &app.bambu;
     let filaments = s.filament_names();
     let chosen: Vec<Value> =
-        s.slots.iter().map(|sl| json!({"preset": filaments.get(sl.preset).cloned().unwrap_or_default(), "color": sl.color})).collect();
+        s.slots.iter().map(|sl| json!({"preset": filaments.get(sl.preset).cloned().unwrap_or_default(), "color": sl.color, "overrides": sl.overrides})).collect();
     let on_plate = s.plate.on_plate();
     let bodies: Vec<(String, String)> = bodies.iter().filter(|(b, _)| on_plate.contains(b)).cloned().collect();
     let slots: serde_json::Map<String, Value> =
@@ -482,7 +554,7 @@ fn slice_params(app: &SolveApp, bodies: &[(String, String)]) -> Value {
         .places
         .iter()
         .filter(|(b, _)| on_plate.contains(b))
-        .map(|(b, (x, y, r))| (b.clone(), json!({"x": x, "y": y, "rotation": r})))
+        .map(|(b, at)| (b.clone(), json!({"x": at.x, "y": at.y, "rotation": at.turn, "scale": at.scale, "orient": at.orient.iter().flatten().collect::<Vec<_>>()})))
         .collect();
     let mut p = json!({"printer": s.printer_name(), "process": s.process_name(), "filaments": chosen, "slots": slots, "overrides": overrides, "placements": placements, "bodies": on_plate, "orient": s.orient});
     if let Some(bed) = names(&s.presets, "bed_types").get(s.bed) {
@@ -640,6 +712,19 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
     egui::ScrollArea::vertical().id_salt("fission_print_side").auto_shrink([false, false]).show(ui, |ui| {
         // ---------------- Printer
         section_title(ui, "fission.bambu.printer_section", "fission_printer");
+        // Bambu Studio's picture of the printer, and the Printers window
+        let want = text(&s.presets, "picture").to_string();
+        if !want.is_empty() && s.printer_picture.as_ref().is_none_or(|(p, _)| *p != want) {
+            s.printer_picture = picture_named(ui.ctx(), &want, "fission_printer_picture").map(|t| (want.clone(), t));
+        }
+        ui.horizontal(|ui| {
+            if let Some((_, tex)) = &s.printer_picture {
+                ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(72.0, 72.0)));
+            }
+            if ui_kit::button(ui, tr("fission.printers.open"), ui_kit::Button::Small).clicked() {
+                *act = Some(Act::Printers);
+            }
+        });
         let labels: Vec<String> = s
             .printers
             .iter()
@@ -676,7 +761,9 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
         };
         ui.horizontal(|ui| {
             ui_kit::text(ui, &status_line, ui_kit::Text::Note("fission_bambu_status"));
-            if ui_kit::button(ui, tr("fission.bambu.refresh"), ui_kit::Button::Small).clicked() {
+            let connected = s.status.is_some();
+            let label = if connected { tr("fission.bambu.refresh") } else { tr("fission.printers.connect") };
+            if ui_kit::button(ui, label, ui_kit::Button::Small).clicked() {
                 *act = Some(Act::Refresh);
             }
         });
@@ -716,6 +803,13 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
                 if let Some(slot) = s.slots.get_mut(i) {
                     ui_kit::dropdown(ui, &format!("fission_bambu_slot_{i}"), &mut slot.preset, &refs);
                 }
+                let edited = s.slots.get(i).is_some_and(|sl| !sl.overrides.is_empty());
+                if ui_kit::button(ui, "✎", if edited { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small })
+                    .on_hover_text(tr("fission.fil.edit"))
+                    .clicked()
+                {
+                    *act = Some(Act::EditFilament(i));
+                }
                 if i > 0
                     && i + 1 == s.slots.len()
                     && ui_kit::button(ui, "−", ui_kit::Button::Small).on_hover_text(tr("fission.bambu.remove_slot")).clicked()
@@ -731,6 +825,7 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
                 let c = text(&s.filament_info(p), "color").to_string();
                 if let Some(slot) = s.slots.get_mut(i) {
                     slot.color = c;
+                    slot.overrides.clear();
                 }
                 s.sliced = None;
             }
@@ -778,6 +873,39 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
             }
         }
         if !bodies.is_empty() {
+            // the plate tools: what a click on the plate does
+            let tools = [crate::bambu_plate::Tool::Move, crate::bambu_plate::Tool::Lay, crate::bambu_plate::Tool::Measure];
+            let mut tool = tools.iter().position(|t| *t == s.plate.tool).unwrap_or(0);
+            let names = [tr("fission.plate.tool_move"), tr("fission.plate.tool_lay"), tr("fission.plate.tool_measure")];
+            if ui_kit::segmented(ui, &mut tool, &names, Default::default()) {
+                s.plate.tool = tools.get(tool).copied().unwrap_or_default();
+                s.plate.measure.clear();
+                s.preview = false;
+            }
+            if s.plate.tool == crate::bambu_plate::Tool::Measure {
+                let line = match s.plate.measure.as_slice() {
+                    [a, b] => {
+                        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                        format(
+                            "fission.plate.distance",
+                            &[("d", &format!("{len:.2}")), ("x", &format!("{:.2}", d[0].abs())), ("y", &format!("{:.2}", d[1].abs())), ("z", &format!("{:.2}", d[2].abs()))],
+                        )
+                    }
+                    [_] => tr("fission.plate.measure_second").to_string(),
+                    _ => tr("fission.plate.measure_first").to_string(),
+                };
+                ui_kit::text(ui, &line, ui_kit::Text::Value("fission_plate_distance", true));
+            }
+            if s.plate.tool == crate::bambu_plate::Tool::Lay {
+                ui_kit::text(ui, tr("fission.plate.lay_hint"), ui_kit::Text::Note("fission_plate_lay_hint"));
+            }
+            ui.horizontal(|ui| {
+                if ui_kit::button(ui, tr("fission.plate.auto_orient"), ui_kit::Button::Small).clicked() && s.plate.auto_orient(None) {
+                    s.sliced = None;
+                    s.preview = false;
+                }
+            });
             ui.horizontal(|ui| {
                 if ui_kit::button(ui, tr("fission.plate.bring"), ui_kit::Button::Small).clicked() {
                     *act = Some(Act::Bring);
@@ -1116,7 +1244,7 @@ fn apply_bring(s: &mut State, b: Bring) {
     }
     // one slot per colour chip: new chips take the first filament's preset
     let preset = s.slots.first().map(|sl| sl.preset).unwrap_or(0);
-    s.slots.resize(b.colours.len().max(1), Slot { preset, color: String::new() });
+    s.slots.resize(b.colours.len().max(1), Slot { preset, ..Slot::default() });
     for (slot, c) in s.slots.iter_mut().zip(&b.colours) {
         slot.color = format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
     }
@@ -1186,6 +1314,189 @@ fn bring_dialog(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// Right-click a part on the plate: turn it, tip it, lay it flat, centre it, take it off the plate.
+fn part_menu(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some((name, at)) = app.bambu.plate.menu.clone() else { return };
+    let mut pick: Option<&str> = None;
+    let resp = ui_kit::Container::new(ctx, ui_kit::Surface::Popup)
+        .area(egui::Id::new("fission_part_menu"))
+        .fixed_pos(at)
+        .constrain(true)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            crate::context_menu::menu_frame(ui, |ui| {
+                for (id, label, icon) in [
+                    ("turn", tr("fission.plate.turn"), "revolve"),
+                    ("tip_x", tr("fission.plate.tip_x"), "revolve"),
+                    ("tip_y", tr("fission.plate.tip_y"), "revolve"),
+                    ("flat", tr("fission.plate.lay_flat"), "ground"),
+                    ("centre", tr("fission.plate.centre"), "move"),
+                    ("remove", tr("fission.plate.remove"), "delete"),
+                ] {
+                    let item = crate::context_menu::Item::action(id, label, icon);
+                    if crate::context_menu::list_row(ui, &item).is_some() {
+                        pick = Some(id);
+                    }
+                }
+            })
+        });
+    let s = &mut app.bambu;
+    if let Some(id) = pick {
+        s.plate.menu = None;
+        let b = bed(s);
+        let locked = s.plate.locked;
+        match id {
+            "remove" => {
+                s.plate.off.insert(name.clone());
+                s.plate.selected = None;
+            }
+            "flat" => {
+                s.plate.auto_orient(Some(&name));
+            }
+            _ if locked => {}
+            _ => {
+                if let Some(p) = s.plate.places.get_mut(&name) {
+                    match id {
+                        "turn" => p.turn = (p.turn + 90.0).rem_euclid(360.0),
+                        "tip_x" => p.tip(0, 90.0),
+                        "tip_y" => p.tip(1, 90.0),
+                        _ => (p.x, p.y) = ((b.0 + b.2) / 2.0, (b.1 + b.3) / 2.0),
+                    }
+                }
+            }
+        }
+        s.sliced = None;
+        s.preview = false;
+    } else if ctx.input(|i| i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)) && !resp.response.contains_pointer() {
+        s.plate.menu = None;
+    }
+}
+
+/// The Filament window: a slot's temperatures, fan, flow and speed, changed for this print only
+/// (the preset in Bambu Studio stays as it is).
+fn filament_window(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some(mut f) = app.bambu.filament_form.take() else { return };
+    let name = app.bambu.slots.get(f.slot).and_then(|sl| app.bambu.filament_names().get(sl.preset).cloned()).unwrap_or_default();
+    let title = format("fission.fil.title", &[("n", &(f.slot + 1).to_string())]);
+    let loading = app.bambu.is_busy(Job::Filament);
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("fission_filament"), "settings", &title)
+        .cards(2.0)
+        .actions(tr("fission.fil.apply"), tr("ui.cancel"), None)
+        .fields()
+        .show(ctx, true, |ui| {
+            ui_kit::text(ui, &name, ui_kit::Text::Heading("fission_filament_name"));
+            if loading {
+                ui_kit::text(ui, tr("fission.bambu.loading"), ui_kit::Text::Note("fission_filament_loading"));
+                return;
+            }
+            for (key, label) in FILAMENT_FIELDS {
+                if !f.base.contains_key(key) && !f.edits.contains_key(key) {
+                    continue;
+                }
+                let mut v = f.edits.get(key).or_else(|| f.base.get(key)).cloned().unwrap_or_default();
+                let before = v.clone();
+                ui_kit::text_row(ui, tr(label), &mut v, "");
+                if v != before {
+                    let v: String = v.trim().chars().take(24).collect();
+                    if f.base.get(key) == Some(&v) || v.is_empty() {
+                        f.edits.remove(key);
+                    } else {
+                        f.edits.insert(key.to_string(), v);
+                    }
+                }
+            }
+            ui_kit::text(ui, tr("fission.fil.note"), ui_kit::Text::Note("fission_filament_note"));
+            if !f.edits.is_empty() && ui_kit::button(ui, tr("fission.bambu.reset_process"), ui_kit::Button::Small).clicked() {
+                f.edits.clear();
+            }
+        });
+    if action == ui_kit::Action::Ok {
+        if let Some(slot) = app.bambu.slots.get_mut(f.slot) {
+            slot.overrides = f.edits;
+        }
+        app.bambu.sliced = None;
+    } else if !(closed || action == ui_kit::Action::Cancel) {
+        app.bambu.filament_form = Some(f);
+    }
+}
+
+/// The Printers window: the printers Fission knows (Bambu Studio's and yours), adding one by its
+/// serial number, IP address and access code, finding printers on the network, testing one.
+fn printers_window(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some(mut f) = app.bambu.printers_form.take() else { return };
+    let title = tr("fission.printers.title").to_string();
+    let mut jobs: Vec<(Job, &'static str, Value)> = Vec::new();
+    let finding = app.bambu.is_busy(Job::Discover);
+    let testing = app.bambu.is_busy(Job::TestPrinter);
+    let printers = app.bambu.printers.clone();
+    let close = ui_kit::Window::new(egui::Id::new("fission_printers"), "settings", &title).cards(2.4).show_body(ctx, |ui| {
+        // the printers known now
+        for p in &printers {
+            ui.horizontal(|ui| {
+                let added = p.get("added").and_then(Value::as_bool).unwrap_or(false);
+                let from = if added { tr("fission.printers.yours") } else { tr("fission.printers.studio") };
+                let ip = if text(p, "ip").is_empty() { "?" } else { text(p, "ip") };
+                ui_kit::text(ui, &format!("{} · {} · {ip} · {from}", text(p, "name"), text(p, "serial")), ui_kit::Text::Inline);
+                if added && ui_kit::button(ui, tr("fission.printers.remove"), ui_kit::Button::Small).clicked() {
+                    jobs.push((Job::SavePrinter, "bambu.remove_printer", json!({"serial": text(p, "serial")})));
+                }
+                if ui_kit::button(ui, tr("fission.printers.edit"), ui_kit::Button::Small).clicked() {
+                    (f.serial, f.ip, f.name) = (text(p, "serial").into(), text(p, "ip").into(), text(p, "name").into());
+                }
+            });
+        }
+        ui_kit::divider(ui, "fission_printers_rule");
+        // find on the network
+        let label = if finding { tr("fission.bambu.finding") } else { tr("fission.printers.find") };
+        if ui_kit::button(ui, label, ui_kit::Button::Enabled(!finding)).clicked() {
+            jobs.push((Job::Discover, "bambu.discover", json!({"wait": 5})));
+        }
+        for found in &f.found.clone() {
+            ui.horizontal(|ui| {
+                ui_kit::text(ui, &format!("{} · {} · {}", text(found, "name"), text(found, "serial"), text(found, "ip")), ui_kit::Text::Inline);
+                if ui_kit::button(ui, tr("fission.printers.use"), ui_kit::Button::Small).clicked() {
+                    (f.serial, f.ip, f.name) = (text(found, "serial").into(), text(found, "ip").into(), text(found, "name").into());
+                }
+            });
+        }
+        // the details
+        ui_kit::text_row(ui, tr("fission.printers.serial"), &mut f.serial, "");
+        ui_kit::text_row(ui, tr("fission.printers.ip"), &mut f.ip, "192.168.1.20");
+        ui_kit::row(ui, tr("fission.printers.code"), |ui| ui_kit::password_field(ui, egui::Id::new("fission_printer_code"), &mut f.code, ""));
+        ui_kit::text_row(ui, tr("fission.printers.name"), &mut f.name, "");
+        ui_kit::text(ui, tr("fission.printers.where"), ui_kit::Text::Note("fission_printers_where"));
+        ui.horizontal(|ui| {
+            let ready = !f.serial.trim().is_empty() && !f.code.trim().is_empty();
+            let label = if testing { tr("fission.bambu.connecting") } else { tr("fission.printers.test") };
+            if ui_kit::button(ui, label, ui_kit::Button::Enabled(ready && !testing && !f.ip.trim().is_empty())).clicked() {
+                jobs.push((
+                    Job::TestPrinter,
+                    "bambu.test_printer",
+                    json!({"ip": f.ip.trim(), "serial": f.serial.trim(), "access_code": f.code.trim()}),
+                ));
+            }
+            if ui_kit::button(ui, tr("fission.printers.save"), if ready { ui_kit::Button::Primary } else { ui_kit::Button::Enabled(false) }).clicked()
+            {
+                jobs.push((
+                    Job::SavePrinter,
+                    "bambu.save_printer",
+                    json!({"serial": f.serial.trim(), "ip": f.ip.trim(), "access_code": f.code.trim(), "name": f.name.trim()}),
+                ));
+            }
+        });
+        if let Some((m, error)) = &f.note {
+            let style = if *error { ui_kit::Text::Error("fission_printers_note") } else { ui_kit::Text::Note("fission_printers_note") };
+            ui_kit::text(ui, m, style);
+        }
+    });
+    for (job, id, params) in jobs {
+        app.bambu.detached(job, id, params);
+    }
+    if !close {
+        app.bambu.printers_form = Some(f);
+    }
+}
+
 /// Draw the workspace (sidebar, result strip, preview and dialogs) when it's open.
 pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     if !active(app) {
@@ -1212,6 +1523,9 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     send_dialog(app, &ctx, &mut act);
     bring_dialog(app, &ctx);
+    part_menu(app, &ctx);
+    printers_window(app, &ctx);
+    filament_window(app, &ctx);
     // the first time the tab shows (each time it's entered), ask which bodies go on the plate
     if !app.bambu.asked && !app.bambu.dont_ask && !bodies.is_empty() && !app.bambu.plate.sizes().is_empty() {
         app.bambu.asked = true;
@@ -1240,6 +1554,16 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         Some(Act::Leave) => app.ui.tab = "MODEL".into(),
         Some(Act::Bring) => open_bring(&mut app.bambu),
+        Some(Act::Printers) => app.bambu.printers_form = Some(PrintersForm::default()),
+        Some(Act::EditFilament(slot)) => {
+            let s = &mut app.bambu;
+            let preset = s.slots.get(slot).and_then(|sl| s.filament_names().get(sl.preset).cloned());
+            if let Some(preset) = preset {
+                let edits = s.slots.get(slot).map(|sl| sl.overrides.clone()).unwrap_or_default();
+                s.filament_form = Some(FilamentForm { slot, base: BTreeMap::new(), edits });
+                s.detached(Job::Filament, "bambu.filament", json!({"preset": preset}));
+            }
+        }
         Some(Act::Export) => {
             if let Some(file) = app.bambu.sliced.as_ref().map(|v| text(v, "file").to_string()) {
                 let name = format!("{}.gcode.3mf", app.session.doc.name);
@@ -1270,7 +1594,7 @@ mod tests {
     fn colours_and_process_edits() {
         assert_eq!(colour("#FF8000"), Color32::from_rgb(255, 128, 0));
         assert_eq!(colour("ff8000ff"), Color32::from_rgb(255, 128, 0));
-        assert_eq!(colour("nonsense"), Color32::GRAY);
+        assert_eq!(colour("nonsense"), crate::theme::Tokens::get().text_dim);
         let mut p = Process { base: [("wall_loops".to_string(), "2".to_string())].into_iter().collect(), edits: BTreeMap::new() };
         p.set("wall_loops", "3".into());
         assert_eq!(p.get("wall_loops"), "3");

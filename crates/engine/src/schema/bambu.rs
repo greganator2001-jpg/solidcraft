@@ -42,6 +42,8 @@ pub struct PresetsResult {
     pub bed: [f64; 4],
     /// The printable height, in mm.
     pub height: f64,
+    /// Bambu Studio's picture of the printer (a PNG), when it's installed.
+    pub picture: Option<String>,
     /// The process `process_values` is for.
     pub process: Option<String>,
     /// That process's main settings by Bambu Studio's key (layer_height, wall_loops,
@@ -92,6 +94,99 @@ pub struct PrinterInfo {
     pub online: bool,
     /// The filament IDs Bambu Studio last saw in its AMS, in tray order.
     pub ams: Vec<String>,
+    /// Added in Fission (Printers window), not only known to Bambu Studio.
+    pub added: bool,
+    /// Bambu Studio's picture of this printer (a PNG), when it's installed.
+    pub picture: Option<String>,
+}
+
+/// A filament preset whose main settings to read.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct FilamentParams {
+    /// A filament preset name (from `bambu.presets`).
+    pub preset: String,
+}
+
+/// What `bambu.filament` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct FilamentResult {
+    /// The preset's main settings by Bambu Studio's key, as text.
+    pub values: std::collections::BTreeMap<String, String>,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// Add a printer by its details (or change the one with this serial number).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SavePrinterParams {
+    /// The printer's serial number (on its screen: Settings, Device).
+    pub serial: String,
+    /// Its LAN access code (on its screen: Settings, Network).
+    pub access_code: String,
+    /// Its IPv4 address. Default: found on the network each time.
+    #[serde(default)]
+    pub ip: Option<String>,
+    /// A name for it. Default: the model's ("A1", "H2S").
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Forget a printer added in Fission.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct RemovePrinterParams {
+    pub serial: String,
+}
+
+/// What `bambu.save_printer` and `bambu.remove_printer` return.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct SavedPrintersResult {
+    /// How many printers Fission keeps.
+    pub saved: usize,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// Connect to a printer with these details, without saving them.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct TestPrinterParams {
+    /// Its IPv4 address.
+    pub ip: String,
+    pub serial: String,
+    pub access_code: String,
+}
+
+/// What `bambu.test_printer` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct TestPrinterResult {
+    /// The printer's status, in a line.
+    pub summary: String,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// A printer announcing itself on the network.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct FoundPrinter {
+    pub ip: String,
+    pub serial: String,
+    pub model: String,
+    pub name: String,
+}
+
+/// What `bambu.discover` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct DiscoverResult {
+    pub found: Vec<FoundPrinter>,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
 }
 
 /// What `bambu.printers` returns.
@@ -113,8 +208,8 @@ pub struct SliceParams {
     /// The process preset. Default: the printer's default.
     #[serde(default)]
     pub process: Option<String>,
-    /// The filament of each slot, slot 1 first: a preset name or {preset, color: '#rrggbb'}, at most
-    /// 16. Slots the bodies use beyond the list repeat its last filament (or the printer's PLA), in
+    /// The filament of each slot, slot 1 first: a preset name or {preset, color: '#rrggbb',
+    /// overrides: {setting: text}} (the settings `bambu.filament` shows), at most 16. Slots the bodies use beyond the list repeat its last filament (or the printer's PLA), in
     /// the colour of the slot's first body.
     #[serde(default)]
     pub filaments: Option<Vec<Value>>,
@@ -136,8 +231,9 @@ pub struct SliceParams {
     /// Process settings to change, by Bambu Studio's key: {"sparse_infill_density": "20%"}.
     #[serde(default)]
     pub overrides: Option<Map<String, Value>>,
-    /// Where bodies sit on the plate, by name: {x, y, rotation?}, the middle of the body's footprint
-    /// in mm in the plate's coordinates, turned `rotation` degrees about Z. Default: the design's
+    /// Where bodies sit on the plate, by name: {x, y, rotation?, scale?, orient?}, the middle of the
+    /// body's footprint in mm in the plate's coordinates; `orient` (a rotation, 9 numbers row by row)
+    /// then `scale` then `rotation` degrees about Z, around the body's middle. Default: the design's
     /// layout, centred on the plate.
     #[serde(default)]
     pub placements: Option<Map<String, Value>>,
@@ -325,6 +421,59 @@ pub struct PrintResult {
     pub mapping: Vec<SlotTray>,
     pub time: String,
     pub grams: f64,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// Run a Fusion 360 Python script.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct FusionRunParams {
+    /// The script: a .py with `def run(context):` that imports adsk.core and adsk.fusion.
+    pub path: String,
+    /// Seconds it may run, 5 to 3600. Default: 300.
+    #[serde(default)]
+    pub timeout: Option<f64>,
+}
+
+/// What `fusion.run_script` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct FusionRunResult {
+    /// How many steps the script made.
+    pub commands: usize,
+    /// Its message boxes, in order.
+    pub messages: Vec<String>,
+    /// What it printed.
+    pub log: String,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// Open a Fusion design saved with the Fission Export script (a .ffx).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct FfxOpenParams {
+    /// The .ffx file.
+    pub path: String,
+}
+
+/// What `fusion.open_ffx` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct FfxOpenResult {
+    /// The Fusion design's name.
+    pub design: String,
+    /// The bodies brought in.
+    pub bodies: Vec<String>,
+    /// The parameters added (your own, from Fusion's parameter list).
+    pub parameters: Vec<String>,
+    /// How many steps the design's Fusion timeline had.
+    pub timeline: usize,
+    /// Rebuilt as a Fission timeline (false: Fusion's finished bodies came in as they are).
+    pub rebuilt: bool,
+    /// What happened along the way (a font that wasn't there, why the timeline wasn't rebuilt).
+    pub messages: Vec<String>,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,

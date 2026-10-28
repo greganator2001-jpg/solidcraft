@@ -16,6 +16,7 @@ pub mod lan;
 pub mod model3mf;
 mod pattern;
 pub mod profiles;
+pub mod saved;
 pub mod slice;
 pub mod studio;
 

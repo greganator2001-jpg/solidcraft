@@ -2613,6 +2613,32 @@ fn chamfer_tool_sides(cur: &Body, p: Vec3, s: f64, sides: Option<(ChamferSide, b
     Ok(Cutter { body, face, edge, extension_inside })
 }
 
+impl Body {
+    /// Per edge (in [`Body::edges`]'s order): whether it only splits one smooth surface into
+    /// pieces (the seam between the two halves of a cylinder, say), where other CAD programs show
+    /// one face and no edge. Empty for a mesh body.
+    pub fn seam_edges(&self) -> Vec<bool> {
+        if self.is_mesh() {
+            return Vec::new();
+        }
+        guard("seam edges", || {
+            let solid = &self.solid;
+            Ok(Body::unique_edges(solid)
+                .iter()
+                .map(|e| {
+                    let faces: Vec<&mt::Face> = solid.face_iter().filter(|f| f.edge_iter().any(|x| x.id() == e.id())).take(3).collect();
+                    let [f1, f2] = faces[..] else { return false };
+                    let (s1, s2) = (f1.oriented_surface(), f2.oriented_surface());
+                    !matches!(s1, mt::Surface::Plane(_))
+                        && std::mem::discriminant(&s1) == std::mem::discriminant(&s2)
+                        && tangent_faces(solid, e)
+                })
+                .collect())
+        })
+        .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

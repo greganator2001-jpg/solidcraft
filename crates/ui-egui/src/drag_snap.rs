@@ -139,40 +139,79 @@ pub fn find(sk: &Sketch, moving: &[(usize, Vec2)], exclude: &[usize], mm_px: f64
     if let Some((_, s)) = best {
         return keep(Some(s));
     }
-    // Lining up: the nearest horizontal and the nearest vertical alignment, each on its own axis.
+    // Lining up (Fusion's dotted guides): the nearest horizontal and the nearest vertical
+    // alignment with a point, the middle of a line or the origin, each on its own axis.
+    let mut lined: Vec<Vec2> = targets.iter().map(|t| t.1).collect();
+    lined.extend(midpoints(sk, &free_curves));
+    lined.push(Vec2::ZERO);
     let tol = ALIGN_PX * mm_px;
-    let (mut hx, mut vy): (Option<(f64, usize, Vec2, Vec2)>, Option<(f64, usize, Vec2, Vec2)>) = (None, None);
+    let mut found: Option<(f64, usize, LineUp)> = None;
     for &(mi, p) in moving {
-        for &(_, t) in &targets {
-            let (dy, dx) = ((p.y - t.y).abs(), (p.x - t.x).abs());
-            if dy < tol && dx > tol && hx.is_none_or(|h| dy < h.0) {
-                hx = Some((dy, mi, p, t));
-            }
-            if dx < tol && dy > tol && vy.is_none_or(|v| dx < v.0) {
-                vy = Some((dx, mi, p, t));
-            }
+        if let Some(l) = line_up(&lined, p, tol)
+            && found.as_ref().is_none_or(|f| l.score < f.0)
+        {
+            found = Some((l.score, mi, l));
         }
     }
-    let mut offset = Vec2::ZERO;
+    let Some((_, mi, l)) = found else { return keep(None) };
+    let p = moving.iter().find(|m| m.0 == mi).map_or(Vec2::ZERO, |m| m.1);
+    keep(Some(Snap { point: id(mi), at: l.at, offset: l.at - p, target: Target::Align, guides: l.guides }))
+}
+
+/// The middles of these lines.
+pub fn midpoints(sk: &Sketch, curves: &[usize]) -> Vec<Vec2> {
+    curves
+        .iter()
+        .filter_map(|&c| match sk.curves.get(c)?.kind {
+            CurveKind::Line { a, b } => Some((sk.point(a)? + sk.point(b)?) * 0.5),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A point lined up with others: where it goes, the dotted guides from what it lines up with,
+/// and how far it moved (to compare alignments).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineUp {
+    pub at: Vec2,
+    pub guides: Vec<(Vec2, Vec2)>,
+    pub score: f64,
+    /// Lined up horizontally (same y) / vertically (same x).
+    pub h: bool,
+    pub v: bool,
+}
+
+/// Line `p` up with the nearest of `targets` horizontally and vertically (within `tol`), as Fusion
+/// does with its dotted guides: grab a centre point and it slides along the line through the
+/// origin or a line's middle, staying centred. None: nothing lines up.
+pub fn line_up(targets: &[Vec2], p: Vec2, tol: f64) -> Option<LineUp> {
+    if !(tol > 0.0 && tol.is_finite()) {
+        return None;
+    }
+    let (mut hx, mut vy): (Option<(f64, Vec2)>, Option<(f64, Vec2)>) = (None, None);
+    for &t in targets {
+        let (dy, dx) = ((p.y - t.y).abs(), (p.x - t.x).abs());
+        // The nearer of equally good targets: the guide is the shorter one.
+        if dy < tol && dx > tol && hx.is_none_or(|h| dy < h.0 - 1e-12 || (dy < h.0 + 1e-12 && dx < (p.x - h.1.x).abs())) {
+            hx = Some((dy, t));
+        }
+        if dx < tol && dy > tol && vy.is_none_or(|v| dx < v.0 - 1e-12 || (dx < v.0 + 1e-12 && dy < (p.y - v.1.y).abs())) {
+            vy = Some((dx, t));
+        }
+    }
+    if hx.is_none() && vy.is_none() {
+        return None;
+    }
+    let at = Vec2::new(vy.map_or(p.x, |v| v.1.x), hx.map_or(p.y, |h| h.1.y));
     let mut guides = Vec::new();
-    let mut point = None;
-    if let Some((_, mi, p, t)) = hx {
-        offset.y = t.y - p.y;
-        point = Some(mi);
-        guides.push((t, Vec2::new(p.x, t.y)));
+    if let Some((_, t)) = hx {
+        guides.push((t, Vec2::new(at.x, t.y)));
     }
-    if let Some((_, mi, p, t)) = vy {
-        offset.x = t.x - p.x;
-        point = point.or(Some(mi));
-        guides.push((t, Vec2::new(t.x, p.y)));
+    if let Some((_, t)) = vy {
+        guides.push((t, Vec2::new(t.x, at.y)));
     }
-    // The guides end at the snapped point (both alignments may move it).
-    let Some(mi) = point else { return keep(None) };
-    let at = moving.iter().find(|m| m.0 == mi).map_or(Vec2::ZERO, |m| m.1) + offset;
-    for g in &mut guides {
-        g.1 = if (g.0.y - g.1.y).abs() < 1e-12 { Vec2::new(at.x, g.0.y) } else { Vec2::new(g.0.x, at.y) };
-    }
-    keep(Some(Snap { point: id(mi), at, offset, target: Target::Align, guides }))
+    let score = hx.map_or(0.0, |h| h.0) + vy.map_or(0.0, |v| v.0);
+    Some(LineUp { at, guides, score, h: hx.is_some(), v: vy.is_some() })
 }
 
 /// Points the drag of `entity` (a point or curve id) moves, and the points that move with them.
@@ -280,5 +319,25 @@ mod tests {
         set_suppressed(true);
         assert!(drag(&s, &end, Vec2::new(10.1, 0.1)).is_none());
         set_suppressed(false);
+    }
+
+    #[test]
+    fn a_dragged_centre_stays_on_the_dotted_line_through_a_middle_or_the_origin() {
+        // Fusion's centring: a circle's centre lines up with the middle of a line (and the origin).
+        let mut s = Sketch::new();
+        let _ = s.add_line(Vec2::new(-20.0, 30.0), Vec2::new(20.0, 30.0), None, None, Some("top"));
+        let _ = s.add_circle(Vec2::new(7.0, 12.0), 3.0, None, Some("c1"));
+        let centre = s.points[s.resolve_point("c1.center").unwrap_or(0)].id.clone();
+        // Near x = 0 (the top line's middle and the origin), far from both in y.
+        let a = drag(&s, &centre, Vec2::new(0.4, 12.0)).expect("centred");
+        assert_eq!(a.target, Target::Align);
+        assert_eq!(a.at, Vec2::new(0.0, 12.0));
+        // The guide is the nearer of the two (the origin, 12 below; the middle is 18 above).
+        assert_eq!(a.guides, vec![(Vec2::ZERO, Vec2::new(0.0, 12.0))]);
+        // Both ways at once: level with the top line's ends and under its middle.
+        let l = line_up(&[Vec2::new(-20.0, 30.0), Vec2::new(0.0, 5.0)], Vec2::new(0.3, 29.8), 0.5).expect("both");
+        assert!(l.h && l.v && l.at == Vec2::new(0.0, 30.0) && l.guides.len() == 2);
+        // Hostile tolerance: nothing.
+        assert!(line_up(&[Vec2::ZERO], Vec2::new(0.1, 9.0), f64::NAN).is_none());
     }
 }

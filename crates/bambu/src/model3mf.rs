@@ -41,28 +41,139 @@ pub fn centre_on_bed(parts: &mut [Part], bed: (f64, f64, f64, f64)) {
     }
 }
 
-/// Put a part on the plate: turned `rotation` degrees about Z around the middle of its footprint,
-/// that middle moved to (`x`, `y`), and its lowest point on the plate (z = 0).
-pub fn place(part: &mut Part, x: f64, y: f64, rotation: f64) {
+/// Where a part sits on the plate and how it's turned and scaled: `orient` (a rotation, applied
+/// first), then `scale`, then `turn` degrees about Z, all around the middle of the part; then the
+/// middle of its footprint goes to (`x`, `y`) and its lowest point onto the plate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub x: f64,
+    pub y: f64,
+    pub turn: f64,
+    pub orient: [[f64; 3]; 3],
+    pub scale: f64,
+}
+
+pub const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+impl Default for Placement {
+    fn default() -> Self {
+        Self { x: 0.0, y: 0.0, turn: 0.0, orient: IDENTITY, scale: 1.0 }
+    }
+}
+
+fn mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut o = [[0.0; 3]; 3];
+    for (i, row) in o.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    o
+}
+
+fn apply(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [0, 1, 2].map(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+}
+
+/// A turn of `deg` degrees about Z.
+pub fn about_z(deg: f64) -> [[f64; 3]; 3] {
+    let (s, c) = if deg.is_finite() { deg.to_radians().sin_cos() } else { (0.0, 1.0) };
+    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+}
+
+/// A turn of `deg` degrees about X (`axis` 0) or Y (`axis` 1).
+pub fn about_axis(axis: usize, deg: f64) -> [[f64; 3]; 3] {
+    let (s, c) = if deg.is_finite() { deg.to_radians().sin_cos() } else { (0.0, 1.0) };
+    if axis == 0 { [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]] } else { [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]] }
+}
+
+/// The rotation that turns unit direction `a` onto unit direction `b`.
+pub fn rot_between(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
+    let n = |v: [f64; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l > 1e-12 && l.is_finite() { v.map(|x| x / l) } else { [0.0, 0.0, -1.0] }
+    };
+    let (a, b) = (n(a), n(b));
+    let v = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if c < -1.0 + 1e-9 {
+        // opposite: half a turn about any axis square to `a`
+        let axis = if a[0].abs() < 0.9 { n([0.0, -a[2], a[1]]) } else { n([-a[2], 0.0, a[0]]) };
+        return [0, 1, 2].map(|i| [0, 1, 2].map(|j| 2.0 * axis[i] * axis[j] - if i == j { 1.0 } else { 0.0 }));
+    }
+    let k = 1.0 / (1.0 + c);
+    let vx = [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]];
+    let vx2 = mul(&vx, &vx);
+    [0, 1, 2].map(|i| [0, 1, 2].map(|j| if i == j { 1.0 } else { 0.0 } + vx[i][j] + vx2[i][j] * k))
+}
+
+impl Placement {
+    /// Put the face whose outward direction (as the part is placed now) is `normal` down on the plate.
+    pub fn lay_on(&mut self, normal: [f64; 3]) {
+        let now = mul(&about_z(self.turn), &self.orient);
+        self.orient = mul(&rot_between(normal, [0.0, 0.0, -1.0]), &now);
+        self.turn = 0.0;
+    }
+
+    /// Turn the part `deg` degrees about the plate's X (`axis` 0) or Y (`axis` 1).
+    pub fn tip(&mut self, axis: usize, deg: f64) {
+        let now = mul(&about_z(self.turn), &self.orient);
+        self.orient = mul(&about_axis(axis.min(1), deg), &now);
+        self.turn = 0.0;
+    }
+}
+
+/// Place a part as `at` says (see [`Placement`]).
+pub fn place_with(part: &mut Part, at: &Placement) {
     let Some((lo, hi)) = part.bounds() else { return };
-    if !(x.is_finite() && y.is_finite()) {
+    if !(at.x.is_finite() && at.y.is_finite()) {
         return;
     }
-    let (cx, cy) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
-    let (s, c) = if rotation.is_finite() { rotation.to_radians().sin_cos() } else { (0.0, 1.0) };
-    for v in &mut part.vertices {
-        let (dx, dy) = (v[0] - cx, v[1] - cy);
-        v[0] = dx * c - dy * s;
-        v[1] = dx * s + dy * c;
+    let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+    let scale = if at.scale.is_finite() && at.scale > 1e-6 { at.scale.min(1e4) } else { 1.0 };
+    let m = mul(&about_z(at.turn), &at.orient);
+    if m.iter().flatten().any(|v| !v.is_finite()) {
+        return;
     }
-    // the turned footprint's middle (a turn moves it off the old middle)
+    for v in &mut part.vertices {
+        let d = [v[0] - c[0], v[1] - c[1], v[2] - c[2]].map(|x| x * scale);
+        *v = apply(&m, d);
+    }
     let Some((lo, hi)) = part.bounds() else { return };
     let (mx, my) = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0);
     for v in &mut part.vertices {
-        v[0] += x - mx;
-        v[1] += y - my;
+        v[0] += at.x - mx;
+        v[1] += at.y - my;
         v[2] -= lo[2];
     }
+}
+
+/// Put a part on the plate: turned `rotation` degrees about Z around the middle of its footprint,
+/// that middle moved to (`x`, `y`), and its lowest point on the plate (z = 0).
+pub fn place(part: &mut Part, x: f64, y: f64, rotation: f64) {
+    place_with(part, &Placement { x, y, turn: rotation, ..Placement::default() });
+}
+
+/// The outward direction of the biggest flat area of a part (as placed): the face it stands
+/// steadiest on, what Auto orient puts down.
+pub fn best_bottom(part: &Part) -> [f64; 3] {
+    let mut groups: Vec<([f64; 3], f64)> = Vec::new();
+    for t in &part.triangles {
+        let Some(v) = t.iter().map(|&i| part.vertices.get(i as usize).copied()).collect::<Option<Vec<[f64; 3]>>>() else { continue };
+        let (a, b) = ([v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]]);
+        let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if !(len > 1e-12 && len.is_finite()) {
+            continue;
+        }
+        let u = n.map(|x| x / len);
+        let key = u.map(|x| (x * 50.0).round() / 50.0);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some(g) => g.1 += len / 2.0,
+            None => groups.push((key, len / 2.0)),
+        }
+    }
+    groups.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or([0.0, 0.0, -1.0], |(k, _)| k)
 }
 
 /// Lay the parts out in rows on the plate, `gap` mm apart, the rows centred: (name, x, y) of each
@@ -276,6 +387,33 @@ mod tests {
         assert!(((lo[1] + hi[1]) / 2.0 - 40.0).abs() < 1e-9 && lo[2].abs() < 1e-12);
         place(&mut c, f64::NAN, 0.0, 0.0);
         assert!(c.vertices.iter().flatten().all(|v| v.is_finite()));
+        // laying a cube on its side, then the biggest flat face of a flat plate goes down
+        let mut cube = test_cube((0.0, 0.0, 100.0, 100.0));
+        let mut at = Placement { x: 50.0, y: 50.0, ..Placement::default() };
+        at.lay_on([1.0, 0.0, 0.0]);
+        place_with(&mut cube, &at);
+        let (lo, hi) = cube.bounds().unwrap_or_default();
+        assert!((hi[2] - lo[2] - 20.0).abs() < 1e-9 && lo[2].abs() < 1e-12);
+        let mut slab = test_cube((0.0, 0.0, 100.0, 100.0));
+        slab.vertices.iter_mut().for_each(|v| v[0] *= 5.0);
+        let mut at = Placement { x: 50.0, y: 50.0, ..Placement::default() };
+        at.tip(0, 90.0);
+        place_with(&mut slab, &at);
+        let n = best_bottom(&slab);
+        at.lay_on(n);
+        let mut slab2 = test_cube((0.0, 0.0, 100.0, 100.0));
+        slab2.vertices.iter_mut().for_each(|v| v[0] *= 5.0);
+        place_with(&mut slab2, &at);
+        let (lo, hi) = slab2.bounds().unwrap_or_default();
+        assert!((hi[2] - lo[2] - 20.0).abs() < 1e-6, "laid on a big face: {lo:?} {hi:?}");
+        // scale doubles the size; a broken placement changes nothing
+        let mut big = test_cube((0.0, 0.0, 100.0, 100.0));
+        place_with(&mut big, &Placement { x: 50.0, y: 50.0, scale: 2.0, ..Placement::default() });
+        let (lo, hi) = big.bounds().unwrap_or_default();
+        assert!((hi[0] - lo[0] - 40.0).abs() < 1e-9);
+        let before = big.vertices.clone();
+        place_with(&mut big, &Placement { x: 1.0, y: 1.0, orient: [[f64::NAN; 3]; 3], ..Placement::default() });
+        assert_eq!(before, big.vertices);
         // arranging three cubes on a 50 mm wide plate: two in a row, one below
         let cubes: Vec<Part> = (0..3).map(|i| Part { name: format!("c{i}"), ..test_cube((0.0, 0.0, 100.0, 100.0)) }).collect();
         let spots = arrange(&cubes, (0.0, 0.0, 50.0, 100.0), 5.0);

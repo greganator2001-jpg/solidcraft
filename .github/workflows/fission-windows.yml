@@ -49,6 +49,9 @@ jobs:
           Copy-Item target/x86_64-pc-windows-msvc/release/solidcraft-cli.exe "$dir/solidcraft-cli.exe"
           Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, THIRD-PARTY-LICENSES.txt, FISSION.md $dir
           Copy-Item "packaging/fission/Test Bambu.cmd", packaging/fission/bambu-test-slice.json $dir
+          Copy-Item packaging/fission/fusion "$dir/fusion" -Recurse -Exclude __pycache__
+          Copy-Item packaging/fission/fusion-addin "$dir/fusion-addin" -Recurse
+          Copy-Item "packaging/fission/Install Fusion add-in.cmd" $dir
           Compress-Archive -Path $dir -DestinationPath "Fission-$ver-windows-x64.zip" -Force
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "ver=$ver" >> $env:GITHUB_OUTPUT

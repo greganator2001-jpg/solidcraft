@@ -15,6 +15,12 @@ fn schemas_and_the_key_check_agree() {
     assert_keys(input_schema_for::<OpenInStudioParams>(), &["bodies", "file", "slots"]);
     assert_keys(input_schema_for::<StatusParams>(), &["ip", "printer", "serial"]);
     assert_keys(input_schema_for::<ControlParams>(), &["action", "ip", "serial"]);
+    assert_keys(input_schema_for::<SavePrinterParams>(), &["access_code", "ip", "name", "serial"]);
+    assert_keys(input_schema_for::<RemovePrinterParams>(), &["serial"]);
+    assert_keys(input_schema_for::<FilamentParams>(), &["preset"]);
+    assert_keys(input_schema_for::<FusionRunParams>(), &["path", "timeout"]);
+    assert_keys(input_schema_for::<FfxOpenParams>(), &["path"]);
+    assert_keys(input_schema_for::<TestPrinterParams>(), &["access_code", "ip", "serial"]);
     assert_keys(
         input_schema_for::<PrintParams>(),
         &["bed_leveling", "file", "flow_cali", "ip", "mapping", "name", "nozzle_offset_cali", "serial", "timelapse"],
@@ -37,6 +43,11 @@ fn replies_have_schemas() {
         output_schema_for::<StatusResult>(),
         output_schema_for::<PrintResult>(),
         output_schema_for::<ControlResult>(),
+        output_schema_for::<SavedPrintersResult>(),
+        output_schema_for::<TestPrinterResult>(),
+        output_schema_for::<DiscoverResult>(),
+        output_schema_for::<FilamentResult>(),
+        output_schema_for::<FusionRunResult>(),
     ] {
         assert!(s.as_value().get("properties").is_some());
     }

@@ -73,6 +73,8 @@ mod font_literals_tests;
 pub mod fonts;
 pub mod frame;
 pub mod frame_rate;
+#[cfg(not(target_arch = "wasm32"))]
+mod fusion_script;
 pub mod gizmo;
 pub mod gpu;
 pub mod help;
@@ -468,6 +470,9 @@ pub struct SolveApp {
     /// Fission's Note for Claude window.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) claude_note: claude_note::State,
+    /// Fission's Run Fusion Script.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fusion_script: fusion_script::State,
     /// A Save or Save As being written on a worker (see [`save_job`]).
     saving: Option<save_job::Saving>,
     pub viewport: viewport::ViewportState,
@@ -688,6 +693,8 @@ impl SolveApp {
             bambu: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             claude_note: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            fusion_script: Default::default(),
             saving: None,
             viewport: viewport::ViewportState::default(),
             render_workspace,
@@ -1225,6 +1232,16 @@ impl SolveApp {
             if !bambu_ui::ribbon(self, id) {
                 bambu_ui::open(self);
             }
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "fusion.run_script" {
+            fusion_script::start(self);
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "fusion.open_ffx" {
+            fusion_script::open_ffx(self);
             return;
         }
         if id == "edit.repeat" {
@@ -2047,6 +2064,8 @@ impl SolveApp {
         easyprint_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         bambu_ui::tick(self, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        fusion_script::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
@@ -2361,6 +2380,8 @@ impl SolveApp {
         easyprint_ui::show(self, ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         claude_note::show(self, ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        fusion_script::show(self, ui.ctx());
         linked_source::show_copies(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());

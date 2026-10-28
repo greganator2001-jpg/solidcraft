@@ -62,7 +62,7 @@ pub fn read_conf(path: Option<&Path>) -> Map<String, Value> {
 }
 
 /// A printer Bambu Studio is set up with on the local network.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StudioPrinter {
     pub serial: String,
     /// The IP address when Bambu Studio's settings hold it readably; "" when they hold it scrambled

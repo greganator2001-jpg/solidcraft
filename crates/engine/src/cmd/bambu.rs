@@ -11,10 +11,10 @@ use solidcraft_bambu::lan::{self, PrintOptions, Printer, PrinterAddr, Tray};
 use solidcraft_bambu::model3mf;
 use solidcraft_bambu::profiles::{self, Library};
 use solidcraft_bambu::slice::{self, Filament, SliceJob, UsedFilament};
-use solidcraft_bambu::studio;
+use solidcraft_bambu::{saved, studio};
 
 pub use solidcraft_bambu::gcode;
-pub use solidcraft_bambu::model3mf::{Part, arrange, centre_on_bed, place};
+pub use solidcraft_bambu::model3mf::{Part, Placement, arrange, best_bottom, centre_on_bed, place, place_with};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, string_list};
@@ -29,6 +29,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("settings")
         .noundo()
         .params("serial; ip?; action: pause|resume|stop (the printer's current job) → done"),
+    CommandSpec::new("bambu.discover", "Find Printers", crate::checked!("bambu.discover", discover))
+        .contract(&DISCOVER_CONTRACT)
+        .output(output_schema_for::<sch::DiscoverResult>)
+        .icon("settings")
+        .noundo()
+        .params("wait? (seconds, 1..10, default 4) → found: [{ip, serial, model, name}] (the Bambu Lab printers announcing themselves on this network)"),
+    CommandSpec::new("bambu.filament", "Filament Settings", crate::checked!("bambu.filament", filament))
+        .contract(&FILAMENT_CONTRACT)
+        .output(output_schema_for::<sch::FilamentResult>)
+        .icon("settings")
+        .noundo()
+        .params("preset (a filament preset, from bambu.presets) → values: its main settings by Bambu Studio's key (nozzle_temperature, textured_plate_temp, fan_max_speed, filament_flow_ratio …), as text; bambu.slice's filaments take changed ones as overrides"),
     CommandSpec::new("bambu.open_in_studio", "Send with Bambu Studio", crate::checked!("bambu.open_in_studio", open_in_studio))
         .contract(&OPEN_CONTRACT)
         .output(output_schema_for::<sch::OpenInStudioResult>)
@@ -53,12 +65,30 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("settings")
         .noundo()
         .params("discover?: bool (listen for the printers on the network to find IP addresses Bambu Studio keeps scrambled; default true); wait? (seconds, 1..10, default 4) → printers: [{serial, name, model, preset, ip, online, ams: [filament ids Bambu Studio last saw]}]"),
+    CommandSpec::new("bambu.remove_printer", "Remove Printer", crate::checked!("bambu.remove_printer", remove_printer))
+        .contract(&REMOVE_PRINTER_CONTRACT)
+        .output(output_schema_for::<sch::SavedPrintersResult>)
+        .icon("delete")
+        .noundo()
+        .params("serial (a printer added in Fission; Bambu Studio's own stay) → saved: how many printers Fission keeps"),
+    CommandSpec::new("bambu.save_printer", "Add Printer", crate::checked!("bambu.save_printer", save_printer))
+        .contract(&SAVE_PRINTER_CONTRACT)
+        .output(output_schema_for::<sch::SavedPrintersResult>)
+        .icon("settings")
+        .noundo()
+        .params("serial; access_code (on the printer's screen: Settings, Network, LAN only); ip? (IPv4; default: found on the network each time); name? → saved: how many printers Fission keeps (in ~/Fission/printers.json)"),
     CommandSpec::new("bambu.slice", "Slice Plate", crate::checked!("bambu.slice", slice_plate))
         .contract(&SLICE_CONTRACT)
         .output(output_schema_for::<sch::SliceResult>)
         .icon("export")
         .noundo()
-        .params("printer? (preset, from bambu.presets; default as bambu.presets); process? (default: the printer's default); filaments?: [preset name or {preset, color?}] (slot 1 first; default: the printer's PLA in the bodies' colours); bodies?: [names] (default: the shown bodies); slots?: {body: slot 1..16} (default 1); bed_type?; arrange?: bool (default false: the bodies stay where they are, centred on the plate); orient?: bool; overrides?: {setting: value} (process settings, e.g. sparse_infill_density); placements?: {body: {x, y, rotation?}} (where a body sits on the plate: the middle of its footprint, mm in the plate's coordinates, turned rotation degrees about Z; others stay where the design has them, centred on the plate) → file (the sliced .gcode.3mf), seconds, time, grams, filaments: [{slot, material, color, grams, meters}], note"),
+        .params("printer? (preset, from bambu.presets; default as bambu.presets); process? (default: the printer's default); filaments?: [preset name or {preset, color?, overrides?: {setting: text}}] (overrides: the filament settings bambu.filament shows) (slot 1 first; default: the printer's PLA in the bodies' colours); bodies?: [names] (default: the shown bodies); slots?: {body: slot 1..16} (default 1); bed_type?; arrange?: bool (default false: the bodies stay where they are, centred on the plate); orient?: bool; overrides?: {setting: value} (process settings, e.g. sparse_infill_density); placements?: {body: {x, y, rotation?, scale?, orient?: [9 numbers]}} (where a body sits on the plate: the middle of its footprint, mm in the plate's coordinates; orient, a rotation row by row, then scale, then rotation degrees about Z; others stay where the design has them, centred on the plate) → file (the sliced .gcode.3mf), seconds, time, grams, filaments: [{slot, material, color, grams, meters}], note"),
+    CommandSpec::new("bambu.test_printer", "Test Printer", crate::checked!("bambu.test_printer", test_printer))
+        .contract(&TEST_PRINTER_CONTRACT)
+        .output(output_schema_for::<sch::TestPrinterResult>)
+        .icon("settings")
+        .noundo()
+        .params("ip; serial; access_code (nothing is saved) → summary: the printer's status when it answers"),
     CommandSpec::new("bambu.status", "Printer Status", crate::checked!("bambu.status", status))
         .contract(&STATUS_CONTRACT)
         .output(output_schema_for::<sch::StatusResult>)
@@ -68,6 +98,11 @@ pub static COMMANDS: &[CommandSpec] = &[
 ];
 
 const CONTROL_CONTRACT: TypedContract<sch::ControlParams> = TypedContract::new();
+const DISCOVER_CONTRACT: TypedContract<sch::PrintersParams> = TypedContract::new();
+const REMOVE_PRINTER_CONTRACT: TypedContract<sch::RemovePrinterParams> = TypedContract::new();
+const SAVE_PRINTER_CONTRACT: TypedContract<sch::SavePrinterParams> = TypedContract::new();
+const TEST_PRINTER_CONTRACT: TypedContract<sch::TestPrinterParams> = TypedContract::new();
+const FILAMENT_CONTRACT: TypedContract<sch::FilamentParams> = TypedContract::new();
 const OPEN_CONTRACT: TypedContract<sch::OpenInStudioParams> = TypedContract::new();
 const PRESETS_CONTRACT: TypedContract<sch::PresetsParams> = TypedContract::new();
 const PRINT_CONTRACT: TypedContract<sch::PrintParams> = TypedContract::new();
@@ -99,6 +134,19 @@ const PROCESS_KEYS: [&str; 22] = [
     "skirt_loops",
     "enable_prime_tower",
     "print_sequence",
+];
+
+/// The filament settings the Filament window shows (Bambu Studio's keys).
+const FILAMENT_KEYS: [&str; 9] = [
+    "nozzle_temperature",
+    "nozzle_temperature_initial_layer",
+    "textured_plate_temp",
+    "hot_plate_temp",
+    "cool_plate_temp",
+    "fan_max_speed",
+    "fan_min_speed",
+    "filament_flow_ratio",
+    "filament_max_volumetric_speed",
 ];
 
 /// How long a slice may take.
@@ -213,7 +261,9 @@ fn presets_of(p: &Value) -> Result<Value> {
         .iter()
         .map(|f| sch::FilamentInfo { color: lib.setting(f, "filament_colour"), material: lib.filament_type(f), filament_id: lib.filament_id(f) })
         .collect();
+    let picture = picture_of(&lib.model_id(&lib.model_of(&printer)));
     reply(sch::PresetsResult {
+        picture,
         studio: exe.map(|e| e.to_string_lossy().into_owned()),
         printers: lib.printers(),
         processes,
@@ -237,7 +287,9 @@ fn printers(_: &mut Session, p: &Value) -> Result<Value> {
 
 fn printers_of(p: &Value) -> Result<Value> {
     let conf = studio::read_conf(None);
-    let mut list = studio::printers(&conf);
+    let all = saved::all(&conf, None);
+    let added: Vec<String> = all.iter().filter(|(_, mine)| *mine).map(|(p, _)| p.serial.clone()).collect();
+    let mut list: Vec<studio::StudioPrinter> = all.into_iter().map(|(p, _)| p).collect();
     let mut online: Vec<String> = Vec::new();
     if bool_(p, "discover").unwrap_or(true) && !list.is_empty() {
         let wait = num(p, "wait").unwrap_or(4.0).clamp(1.0, 10.0);
@@ -259,15 +311,107 @@ fn printers_of(p: &Value) -> Result<Value> {
             ip: x.ip.clone(),
             online: online.contains(&x.serial),
             ams: studio::last_ams(&conf, &x.serial),
+            added: added.contains(&x.serial),
+            picture: picture_of(&x.model),
         })
         .collect();
     reply(sch::PrintersResult { printers, ..Default::default() })
+}
+
+/// Bambu Studio's picture of a printer model ("N2S"), from the installed Bambu Studio.
+fn picture_of(model: &str) -> Option<String> {
+    let res = profiles::resources_of(&profiles::find_studio(None)?)?;
+    let safe: String = model.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let p = res.join("images").join(format!("printer_preview_{safe}.png"));
+    p.is_file().then(|| p.to_string_lossy().into_owned())
+}
+
+fn filament(_: &mut Session, p: &Value) -> Result<Value> {
+    filament_of(p)
+}
+
+/// A filament preset's main settings.
+fn filament_of(p: &Value) -> Result<Value> {
+    let cmd = "bambu.filament";
+    let preset = str_(p, "preset").ok_or_else(|| bad(cmd, "give `preset`"))?;
+    let lib = library(profiles::find_studio(None).as_deref(), cmd)?;
+    let flat = lib.flatten(preset).map_err(|e| bad(cmd, e))?;
+    let values = FILAMENT_KEYS.iter().filter(|k| flat.contains_key(**k)).map(|k| (k.to_string(), lib.setting(preset, k))).collect();
+    reply(sch::FilamentResult { values, ..Default::default() })
+}
+
+fn save_printer(_: &mut Session, p: &Value) -> Result<Value> {
+    save_printer_of(p)
+}
+
+fn save_printer_of(p: &Value) -> Result<Value> {
+    let cmd = "bambu.save_printer";
+    let t = |k: &str| str_(p, k).map(str::trim).unwrap_or("").to_string();
+    let serial = t("serial");
+    let model = studio::model_from_serial(&serial).to_string();
+    let name = match t("name") {
+        n if n.is_empty() => studio::model_name(&model).to_string(),
+        n => n,
+    };
+    let printer = studio::StudioPrinter { serial, ip: t("ip"), access_code: t("access_code"), model, name };
+    let list = saved::save(None, printer).map_err(|e| bad(cmd, e))?;
+    reply(sch::SavedPrintersResult { saved: list.len(), ..Default::default() })
+}
+
+fn remove_printer(_: &mut Session, p: &Value) -> Result<Value> {
+    remove_printer_of(p)
+}
+
+fn remove_printer_of(p: &Value) -> Result<Value> {
+    let cmd = "bambu.remove_printer";
+    let serial = str_(p, "serial").map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad(cmd, "give `serial`"))?;
+    let list = saved::remove(None, serial).map_err(other)?;
+    reply(sch::SavedPrintersResult { saved: list.len(), ..Default::default() })
+}
+
+fn test_printer(_: &mut Session, p: &Value) -> Result<Value> {
+    test_printer_of(p)
+}
+
+/// Connect to a printer with the details typed in (not saved), and read its status.
+fn test_printer_of(p: &Value) -> Result<Value> {
+    let cmd = "bambu.test_printer";
+    let t = |k: &str| str_(p, k).map(str::trim).unwrap_or("").to_string();
+    let addr =
+        PrinterAddr { ip: t("ip"), serial: t("serial"), access_code: t("access_code"), model: studio::model_from_serial(&t("serial")).to_string() };
+    if addr.ip.parse::<std::net::Ipv4Addr>().is_err() {
+        return Err(bad(cmd, "give the printer's IP address (on its screen: Settings, Network)"));
+    }
+    let pr = Printer::connect(addr, Duration::from_secs(6)).map_err(other)?;
+    let st = pr.status();
+    pr.close();
+    reply(sch::TestPrinterResult { summary: st.summary(), ..Default::default() })
+}
+
+fn discover(_: &mut Session, p: &Value) -> Result<Value> {
+    discover_of(p)
+}
+
+/// The Bambu Lab printers announcing themselves on this network.
+fn discover_of(p: &Value) -> Result<Value> {
+    let wait = num(p, "wait").unwrap_or(4.0).clamp(1.0, 10.0);
+    let found = lan::discover(Duration::from_secs_f64(wait), &[])
+        .into_iter()
+        .map(|f| sch::FoundPrinter {
+            model: f.model.clone(),
+            name: if f.name.is_empty() { studio::model_name(&f.model).to_string() } else { f.name },
+            ip: f.ip,
+            serial: f.serial,
+        })
+        .collect();
+    reply(sch::DiscoverResult { found, ..Default::default() })
 }
 
 fn filaments_of(lib: &Library, printer: &str, p: &Value, parts: &[Part], cmd: &str) -> Result<Vec<Filament>> {
     let used = parts.iter().map(|x| x.filament).max().unwrap_or(1);
     let colour_of = |slot: u32| parts.iter().find(|x| x.filament == slot).map(|x| x.color.clone()).unwrap_or_else(|| "#C8C8C8".into());
     let mut out = Vec::new();
+    let mut filament_overrides: std::collections::BTreeMap<usize, Map<String, Value>> = std::collections::BTreeMap::new();
     if let Some(list) = p.get("filaments").and_then(Value::as_array) {
         if list.len() > MAX_SLOTS as usize {
             return Err(bad(cmd, format!("at most {MAX_SLOTS} filaments")));
@@ -277,6 +421,15 @@ fn filaments_of(lib: &Library, printer: &str, p: &Value, parts: &[Part], cmd: &s
             let (preset, color) = match f {
                 Value::String(s) => (s.clone(), None),
                 Value::Object(o) => {
+                    if let Some(over) = o.get("overrides").and_then(Value::as_object) {
+                        // only the settings the Filament window offers, as text
+                        let kept: Map<String, Value> = over
+                            .iter()
+                            .filter(|(k, v)| FILAMENT_KEYS.contains(&k.as_str()) && v.as_str().is_some_and(|t| !t.trim().is_empty() && t.len() < 32))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        filament_overrides.insert(i, kept);
+                    }
                     (o.get("preset").and_then(Value::as_str).unwrap_or("").to_string(), o.get("color").and_then(Value::as_str).map(str::to_string))
                 }
                 _ => return Err(bad(cmd, "each filament is a preset name or {preset, color}")),
@@ -284,7 +437,8 @@ fn filaments_of(lib: &Library, printer: &str, p: &Value, parts: &[Part], cmd: &s
             if !known.contains(&preset) {
                 return Err(bad(cmd, format!("`{preset}` isn't a filament preset for {printer} (bambu.presets lists them)")));
             }
-            out.push(Filament { preset, color: color.unwrap_or_else(|| colour_of(i as u32 + 1)), overrides: Map::new() });
+            let overrides = filament_overrides.remove(&i).unwrap_or_default();
+            out.push(Filament { preset, color: color.unwrap_or_else(|| colour_of(i as u32 + 1)), overrides });
         }
     }
     let fallback = lib.default_filament(printer, "PLA").or_else(|| lib.filaments(printer, true).first().cloned());
@@ -364,11 +518,8 @@ pub fn prepare_slice(s: &Session, p: &Value) -> Result<SlicePlan> {
     if let Some(places) = p.get("placements").and_then(Value::as_object) {
         for part in &mut parts {
             let Some(at) = places.get(&part.name) else { continue };
-            let n = |k: &str| at.get(k).and_then(Value::as_f64);
-            match (n("x"), n("y")) {
-                (Some(x), Some(y)) if x.is_finite() && y.is_finite() => model3mf::place(part, x, y, n("rotation").unwrap_or(0.0)),
-                _ => return Err(bad(cmd, format!("the placement of `{}` needs numbers x and y", part.name))),
-            }
+            let place = placement_of(at).ok_or_else(|| bad(cmd, format!("the placement of `{}` needs numbers x and y (and orient: 9 numbers)", part.name)))?;
+            model3mf::place_with(part, &place);
         }
     }
     if let Some((lo, hi)) = model3mf::bounds_of(&parts) {
@@ -410,8 +561,30 @@ pub fn run_detached(id: &str, p: &Value) -> Result<Value> {
         "bambu.status" => status_of(p),
         "bambu.print" => print_of(p),
         "bambu.control" => control_of(p),
+        "bambu.discover" => discover_of(p),
+        "bambu.filament" => filament_of(p),
+        "bambu.save_printer" => save_printer_of(p),
+        "bambu.remove_printer" => remove_printer_of(p),
+        "bambu.test_printer" => test_printer_of(p),
         _ => Err(EngineError::UnknownCommand(id.to_string())),
     }
+}
+
+/// A placement as `bambu.slice` takes it: {x, y, rotation?, scale?, orient?: [9 numbers, row by row]}.
+fn placement_of(at: &Value) -> Option<model3mf::Placement> {
+    let n = |k: &str| at.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let mut p = model3mf::Placement { x: n("x")?, y: n("y")?, turn: n("rotation").unwrap_or(0.0), ..Default::default() };
+    if let Some(s) = n("scale") {
+        p.scale = s.clamp(0.001, 1000.0);
+    }
+    if let Some(o) = at.get("orient") {
+        let v: Vec<f64> = o.as_array()?.iter().filter_map(Value::as_f64).filter(|x| x.is_finite()).collect();
+        if v.len() != 9 {
+            return None;
+        }
+        p.orient = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
+    }
+    Some(p)
 }
 
 /// The shown bodies as plate parts (each on filament 1, where the design has them), for the Print
@@ -455,11 +628,10 @@ fn open_in_studio(s: &mut Session, p: &Value) -> Result<Value> {
 fn address(p: &Value, cmd: &str) -> Result<PrinterAddr> {
     let serial = str_(p, "serial").map(str::trim).filter(|x| !x.is_empty()).ok_or_else(|| bad(cmd, "give `serial` (bambu.printers lists them)"))?;
     let conf = studio::read_conf(None);
-    let known = studio::printers(&conf);
-    let sp = known
-        .iter()
-        .find(|x| x.serial.eq_ignore_ascii_case(serial))
-        .ok_or_else(|| bad(cmd, format!("Bambu Studio isn't set up with printer {serial} (connect it in Bambu Studio first)")))?;
+    let known: Vec<studio::StudioPrinter> = saved::all(&conf, None).into_iter().map(|(p, _)| p).collect();
+    let sp = known.iter().find(|x| x.serial.eq_ignore_ascii_case(serial)).ok_or_else(|| {
+        bad(cmd, format!("printer {serial} isn't set up: connect it in Bambu Studio, or add it with its IP address and access code"))
+    })?;
     let mut ip = str_(p, "ip").map(str::trim).unwrap_or("").to_string();
     if !ip.is_empty() && ip.parse::<std::net::Ipv4Addr>().is_err() {
         return Err(bad(cmd, format!("`{ip}` isn't an IP address")));

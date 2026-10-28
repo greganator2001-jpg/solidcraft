@@ -463,8 +463,10 @@ pub fn refine_snap(
         let g = |v: f64| (v / step).round() * step;
         if dy < tol && dx > tol {
             best = Some((dy, "H", Vec2::new(g(lp.x), prev.y)));
+            crate::inference::set_guides(vec![(prev, Vec2::new(g(lp.x), prev.y))]);
         } else if dx < tol && dy > tol {
             best = Some((dx, "V", Vec2::new(prev.x, g(lp.y))));
+            crate::inference::set_guides(vec![(prev, Vec2::new(prev.x, g(lp.y)))]);
         }
     }
     // Line tool: parallel or perpendicular to a line, or on a line's extension.
@@ -475,6 +477,31 @@ pub fn refine_snap(
         && let Some(i) = crate::inference::lines(sk, prev, lp, tol)
     {
         best = Some((i.dist, i.label(), i.at));
+    }
+    // Lining up with any point, a line's middle or the origin (Fusion's dotted guides): the
+    // cursor slides along the guide, so a centre stays centred. The free coordinate follows the grid.
+    if !mid_only && best.is_none() && !crate::drag_snap::suppressed() {
+        let mut targets: Vec<Vec2> = sk.points.iter().map(|p| p.pos).collect();
+        let all: Vec<usize> = (0..sk.curves.len()).collect();
+        targets.extend(crate::drag_snap::midpoints(sk, &all));
+        targets.push(Vec2::ZERO);
+        if let Some(t) = app.tool.as_ref() {
+            targets.extend(t.pts.iter().map(|p| p.0));
+        }
+        targets.extend(prev);
+        if let Some(l) = crate::drag_snap::line_up(&targets, lp, tol) {
+            let step = solidcraft_engine::view::grid_step(app.cam.half_height()).0 / 10.0;
+            let g = |v: f64| (v / step).round() * step;
+            let at = Vec2::new(if l.v { l.at.x } else { g(lp.x) }, if l.h { l.at.y } else { g(lp.y) });
+            let guides = l.guides.iter().map(|&(a, b)| (a, if (a.y - b.y).abs() < 1e-12 { Vec2::new(at.x, a.y) } else { Vec2::new(a.x, at.y) })).collect();
+            crate::inference::set_guides(guides);
+            let label = match (l.h, l.v) {
+                (true, true) => "+",
+                (true, false) => "H",
+                _ => "V",
+            };
+            best = Some((l.score, label, at));
+        }
     }
     SNAP.with(|s| *s.borrow_mut() = best.map(|(_, l, p)| (l, p)));
     // A midpoint snap is a point argument the commands understand ("mid:<line>").

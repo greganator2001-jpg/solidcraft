@@ -203,6 +203,7 @@ pub const SECTIONS: &[Section] = &[
         promoted: 2,
         ids: &["document.units", "timeline.compute_all", "edit.checkpoint", "edit.restore_checkpoint"],
     },
+    Section { tab: "MANAGE", panel: "ADD-INS", promoted: 2, ids: &["fusion.open_ffx", "fusion.run_script"] },
     Section {
         tab: "VIEW",
         panel: "VIEWS",
@@ -354,6 +355,8 @@ const LEGACY_RENDER_SECTIONS: &[Section] = &[
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("bambu.open_in_studio", "Bambu Studio"),
+    ("fusion.open_ffx", "From Fusion"),
+    ("fusion.run_script", "Run Script"),
     ("view.shots_strip", "Strip"),
     ("appearance.paint", "Paint"),
     ("appearance.pick_up", "Pick Up"),
@@ -1027,7 +1030,7 @@ mod tests {
         let create = ids("MODEL", "CREATE");
         assert!(create.contains(&"plastic.boss") && create.contains(&"solid.rib") && create.contains(&"plastic.lip"));
         assert!(ids("MODEL", "MODIFY").contains(&"solid.shell"));
-        assert_eq!(panels("MANAGE"), ["PARAMETERS", "CONFIGURATIONS", "MATERIALS", "RULES", "DESIGN"]);
+        assert_eq!(panels("MANAGE"), ["PARAMETERS", "CONFIGURATIONS", "MATERIALS", "RULES", "DESIGN", "ADD-INS"]);
         // The former sketch/solid INSPECT panels now share a global INSPECT tab.
         for (panel, commands) in [
             ("CHECK", vec!["inspect.interference", "inspect.draft", "inspect.accessibility"]),

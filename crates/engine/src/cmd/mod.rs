@@ -51,6 +51,8 @@ mod config;
 mod design_link;
 mod file;
 mod frame;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fusion;
 pub(crate) mod inspect;
 mod interference;
 pub(crate) mod joints;
@@ -313,6 +315,8 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(file::COMMANDS.iter());
     #[cfg(not(target_arch = "wasm32"))]
     v.extend(bambu::COMMANDS.iter());
+    #[cfg(not(target_arch = "wasm32"))]
+    v.extend(fusion::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(inspect::COMMANDS.iter());
     v.extend(compare::COMMANDS.iter());

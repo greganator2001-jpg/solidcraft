@@ -13,6 +13,8 @@ pub const DOCUMENTED: &[&str] = &[
     "bambu.print",
     "bambu.slice",
     "face.delete",
+    "fusion.open_ffx",
+    "fusion.run_script",
     "material.assign",
     "parameters.change",
     "solid.align",
