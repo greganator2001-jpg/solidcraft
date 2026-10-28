@@ -82,8 +82,8 @@ impl Process {
 
 #[derive(Default)]
 pub struct State {
-    /// The workspace is showing (instead of the design's browser and timeline).
-    pub open: bool,
+    /// A ribbon button's action, done when the sidebar next draws.
+    pending: Option<Act>,
     started: bool,
     preview: bool,
     channel: Option<(Sender<Answer>, Receiver<Answer>)>,
@@ -194,10 +194,17 @@ impl State {
     }
 }
 
-/// Enter the workspace (the ribbon's Slice Plate and Print Plate).
+/// The ribbon tab that is the workspace, as FissionCAD's BAMBU tab.
+pub const TAB: &str = "BAMBU";
+
+/// Enter the workspace (the BAMBU tab; MODEL > PRINT > Slice Plate).
 pub fn open(app: &mut SolveApp) {
-    let s = &mut app.bambu;
-    s.open = true;
+    app.ui.tab = TAB.into();
+    start(&mut app.bambu);
+}
+
+/// The first time the workspace shows: find the printers, read the presets.
+fn start(s: &mut State) {
     if !s.started {
         s.started = true;
         s.side = "left".into();
@@ -207,9 +214,23 @@ pub fn open(app: &mut SolveApp) {
     }
 }
 
-/// Whether the PRINT workspace is showing.
+/// Whether the workspace is showing (its tab is selected).
 pub fn active(app: &SolveApp) -> bool {
-    app.bambu.open
+    app.ui.tab == TAB
+}
+
+/// A BAMBU ribbon button while the workspace shows: Slice Plate slices, Print Plate opens the
+/// Send print dialog. False when it isn't one of those (or the workspace isn't showing).
+pub fn ribbon(app: &mut SolveApp, id: &str) -> bool {
+    if !active(app) {
+        return false;
+    }
+    app.bambu.pending = match id {
+        "bambu.slice" => Some(Act::Slice),
+        "bambu.print" => Some(Act::OpenSend),
+        _ => return false,
+    };
+    true
 }
 
 /// Take the workers' answers (every frame, before drawing).
@@ -262,8 +283,9 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     }
     // keep the chosen printer's status fresh while the workspace is open
     let now = ctx.input(|i| i.time);
+    let showing = active(app);
     let s = &mut app.bambu;
-    if s.open && s.target_printer().is_some_and(|p| p.get("online").and_then(Value::as_bool).unwrap_or(false)) {
+    if showing && s.target_printer().is_some_and(|p| p.get("online").and_then(Value::as_bool).unwrap_or(false)) {
         if !s.is_busy(Job::Status) && !s.is_busy(Job::Sync) && (s.status_at == 0.0 || now - s.status_at > STATUS_EVERY) {
             s.status_at = now;
             s.read_status(Job::Status);
@@ -829,12 +851,13 @@ fn send_dialog(app: &mut SolveApp, ctx: &egui::Context, act: &mut Option<Act>) {
 
 /// Draw the workspace (sidebar, result strip, preview and dialogs) when it's open.
 pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
-    if !app.bambu.open {
+    if !active(app) {
         crate::shell::register_panel(app, "fission:print", None, None);
         return;
     }
+    start(&mut app.bambu);
     let bodies = solidcraft_engine::cmd::bambu::plate_bodies(&app.session);
-    let mut act = None;
+    let mut act = app.bambu.pending.take();
     let bounds = crate::shell::panel_bounds(app, ui.available_rect_before_wrap());
     let (mut side, mut width) = (app.bambu.side.clone(), app.bambu.width);
     let title = tr("fission.bambu.title").to_string();
@@ -873,7 +896,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 app.bambu.detached(Job::Control, "bambu.control", params);
             }
         }
-        Some(Act::Leave) => app.bambu.open = false,
+        Some(Act::Leave) => app.ui.tab = "MODEL".into(),
         None => {}
     }
 }

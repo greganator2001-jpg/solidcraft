@@ -1220,7 +1220,9 @@ impl SolveApp {
         // Fission: Slice Plate and Print Plate open the Print panel.
         #[cfg(not(target_arch = "wasm32"))]
         if matches!(id, "bambu.slice" | "bambu.print") {
-            bambu_ui::open(self);
+            if !bambu_ui::ribbon(self, id) {
+                bambu_ui::open(self);
+            }
             return;
         }
         if id == "edit.repeat" {

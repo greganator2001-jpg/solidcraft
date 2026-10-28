@@ -100,8 +100,10 @@ pub const SECTIONS: &[Section] = &[
     },
     Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
-    // Fission: slice with Bambu Studio and print on a Bambu Lab printer.
+    // Fission: slice with Bambu Studio and print on a Bambu Lab printer (MODEL > PRINT goes to the
+    // BAMBU tab, whose ribbon slices and prints).
     Section { tab: "MODEL", panel: "PRINT", promoted: 2, ids: &["bambu.slice", "bambu.open_in_studio"] },
+    Section { tab: "BAMBU", panel: "PLATE", promoted: 3, ids: &["bambu.slice", "bambu.print", "bambu.open_in_studio"] },
     // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
     Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
@@ -592,6 +594,9 @@ pub fn visible_tabs(app: &crate::SolveApp) -> Vec<&'static str> {
     // from a sketch of its lines, so Weldments is always there too.
     tabs.push("SHEET METAL");
     tabs.push("WELDMENTS");
+    // Fission: the BAMBU tab turns the window into a print plate, as in FissionCAD.
+    #[cfg(not(target_arch = "wasm32"))]
+    tabs.push(crate::bambu_ui::TAB);
     tabs
 }
 
