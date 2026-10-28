@@ -828,6 +828,8 @@ mod tests {
         let mut h = crate::scenario::Harness::new();
         let mut fresh = TABS.to_vec();
         fresh.extend(["SHEET METAL", "WELDMENTS"]);
+        #[cfg(not(target_arch = "wasm32"))]
+        fresh.push(crate::bambu_ui::TAB);
         assert_eq!(visible_tabs(&h.app), fresh, "SHEET METAL and WELDMENTS are reachable before any sheet body or member exists");
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
         assert_eq!(h.app.ui.tab, "SKETCH");
