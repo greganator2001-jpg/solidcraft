@@ -208,7 +208,8 @@ fn start(s: &mut State) {
     if !s.started {
         s.started = true;
         s.side = "left".into();
-        s.width = 0.0;
+        // wide enough for Bambu Studio's long preset names (the card caps it to the window)
+        s.width = crate::theme::Tokens::get().form_card_width * 1.75;
         s.detached(Job::Printers, "bambu.printers", json!({"discover": true, "wait": 4}));
         s.load_presets(None);
     }

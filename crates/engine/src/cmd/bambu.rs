@@ -101,7 +101,8 @@ fn studio_exe(cmd: &str) -> Result<PathBuf> {
 fn library(exe: Option<&Path>, cmd: &str) -> Result<Library> {
     let lib = Library::for_install(exe);
     if lib.is_empty() {
-        return Err(bad(cmd, "no Bambu Studio presets were found (is Bambu Studio installed and opened once?)"));
+        let _ = cmd;
+        return Err(other("Bambu Studio's presets weren't found. Install Bambu Studio and open it once.".into()));
     }
     Ok(lib)
 }
