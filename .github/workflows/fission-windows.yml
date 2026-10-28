@@ -1,5 +1,6 @@
 # Fission (Gregory's SolidCraft fork): build the Windows app on every push to the `fission` branch and
-# publish it as a release with a portable zip. Upstream's own workflows run on `main` / `release`,
+# publish it as a release with a portable zip. A push to `fission-test` builds the same way but
+# publishes a pre-release (never "latest"), for trying a change before it goes to `fission`. Upstream's own workflows run on `main` / `release`,
 # which this fork doesn't push to, so they stay idle here.
 #
 # SOLIDCRAFT_VERSION is deliberately NOT set: then the app's update check doesn't offer upstream
@@ -8,12 +9,12 @@ name: Fission Windows build
 
 on:
   push:
-    branches: [fission]
+    branches: [fission, fission-test]
     paths-ignore: ["**/*.md", "docs/**"]
   workflow_dispatch:
 
 concurrency:
-  group: fission-windows
+  group: fission-windows-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -40,12 +41,14 @@ jobs:
         shell: pwsh
         run: |
           $ver = (Select-String -Path FISSION_VERSION -Pattern '\S+').Matches[0].Value
+          if ("$env:GITHUB_REF_NAME" -eq "fission-test") { $ver = "$ver-test" }
           $tag = "fission-v$ver-$env:GITHUB_RUN_NUMBER"
           $dir = "Fission"
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/solidcraft.exe "$dir/Fission.exe"
           Copy-Item target/x86_64-pc-windows-msvc/release/solidcraft-cli.exe "$dir/solidcraft-cli.exe"
           Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, THIRD-PARTY-LICENSES.txt, FISSION.md $dir
+          Copy-Item "packaging/fission/Test Bambu.cmd", packaging/fission/bambu-test-slice.json $dir
           Compress-Archive -Path $dir -DestinationPath "Fission-$ver-windows-x64.zip" -Force
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "ver=$ver" >> $env:GITHUB_OUTPUT
@@ -55,4 +58,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $notes = "Fission ${{ steps.pkg.outputs.ver }} (build ${{ github.run_number }}, commit ${{ github.sha }}).`n`nDownload Fission-${{ steps.pkg.outputs.ver }}-windows-x64.zip, extract it, and run Fission\Fission.exe. Windows SmartScreen: More info, then Run anyway (it isn't signed)."
-          gh release create "${{ steps.pkg.outputs.tag }}" "Fission-${{ steps.pkg.outputs.ver }}-windows-x64.zip" --title "Fission ${{ steps.pkg.outputs.ver }}" --notes "$notes" --target "${{ github.sha }}" --latest
+          gh release create "${{ steps.pkg.outputs.tag }}" "Fission-${{ steps.pkg.outputs.ver }}-windows-x64.zip" --title "Fission ${{ steps.pkg.outputs.ver }}" --notes "$notes" --target "${{ github.sha }}" $(if ("$env:GITHUB_REF_NAME" -eq "fission-test") { "--prerelease" } else { "--latest" })
