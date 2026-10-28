@@ -6,14 +6,15 @@ use crate::schema::{input_schema_for, output_schema_for};
 
 #[test]
 fn schemas_and_the_key_check_agree() {
-    assert_keys(input_schema_for::<PresetsParams>(), &["printer"]);
+    assert_keys(input_schema_for::<PresetsParams>(), &["printer", "process"]);
     assert_keys(input_schema_for::<PrintersParams>(), &["discover", "wait"]);
     assert_keys(
         input_schema_for::<SliceParams>(),
         &["arrange", "bed_type", "bodies", "filaments", "orient", "overrides", "printer", "process", "slots"],
     );
     assert_keys(input_schema_for::<OpenInStudioParams>(), &["bodies", "file", "slots"]);
-    assert_keys(input_schema_for::<StatusParams>(), &["ip", "serial"]);
+    assert_keys(input_schema_for::<StatusParams>(), &["ip", "printer", "serial"]);
+    assert_keys(input_schema_for::<ControlParams>(), &["action", "ip", "serial"]);
     assert_keys(
         input_schema_for::<PrintParams>(),
         &["bed_leveling", "file", "flow_cali", "ip", "mapping", "name", "nozzle_offset_cali", "serial", "timelapse"],
@@ -35,6 +36,7 @@ fn replies_have_schemas() {
         output_schema_for::<OpenInStudioResult>(),
         output_schema_for::<StatusResult>(),
         output_schema_for::<PrintResult>(),
+        output_schema_for::<ControlResult>(),
     ] {
         assert!(s.as_value().get("properties").is_some());
     }

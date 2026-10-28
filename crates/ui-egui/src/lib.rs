@@ -2237,9 +2237,10 @@ impl SolveApp {
                 return;
             }
         }
-        let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
+        let floating =
+            render_workspace::active(self) || self.print_workspace() || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
-        let show_timeline = self.ui.show_timeline && !render_workspace::active(self);
+        let show_timeline = self.ui.show_timeline && !render_workspace::active(self) && !self.print_workspace();
         let left_timeline = show_timeline && self.preferences.timeline_left;
         timeline_left::animate_folds(self, ui.ctx());
         if !floating && !self.embedded {
@@ -2306,7 +2307,9 @@ impl SolveApp {
             render_ui::shots_strip(self, ui);
             render_workspace::panel(self, ui);
         }
-        if self.ui.show_browser {
+        #[cfg(not(target_arch = "wasm32"))]
+        bambu_ui::panel(self, ui);
+        if self.ui.show_browser && !self.print_workspace() {
             browser::browser(self, ui);
         }
         if floating {
@@ -2353,13 +2356,19 @@ impl SolveApp {
         delete::show(self, ui.ctx());
         easyprint_ui::show(self, ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
-        bambu_ui::show(self, ui.ctx());
-        #[cfg(not(target_arch = "wasm32"))]
         claude_note::show(self, ui.ctx());
         linked_source::show_copies(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
+    }
+
+    /// Fission's PRINT workspace is showing (it takes the browser's and timeline's places).
+    fn print_workspace(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return bambu_ui::active(self);
+        #[cfg(target_arch = "wasm32")]
+        false
     }
 
     fn show_workspace(&mut self, ui: &mut egui::Ui) {

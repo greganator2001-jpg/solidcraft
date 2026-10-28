@@ -14,6 +14,9 @@ pub struct PresetsParams {
     /// first printer Bambu Studio is connected to, else the first printer preset.
     #[serde(default)]
     pub printer: Option<String>,
+    /// The process preset whose main settings `process_values` gives. Default: the printer's default.
+    #[serde(default)]
+    pub process: Option<String>,
 }
 
 /// What `bambu.presets` returns.
@@ -39,9 +42,25 @@ pub struct PresetsResult {
     pub bed: [f64; 4],
     /// The printable height, in mm.
     pub height: f64,
+    /// The process `process_values` is for.
+    pub process: Option<String>,
+    /// That process's main settings by Bambu Studio's key (layer_height, wall_loops,
+    /// sparse_infill_density, enable_support, brim_type …), as text.
+    pub process_values: std::collections::BTreeMap<String, String>,
+    /// Each filament preset's colour ('#rrggbb') and material, in `filaments` order.
+    pub filament_info: Vec<FilamentInfo>,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
+}
+
+/// A filament preset's colour and material.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct FilamentInfo {
+    pub color: String,
+    pub material: String,
+    /// Bambu's filament ID ('GFA00', or 'P…' for your own), what an AMS tray reports.
+    pub filament_id: String,
 }
 
 /// List the Bambu Lab printers Bambu Studio is connected to on the local network.
@@ -145,6 +164,8 @@ pub struct SliceResult {
     pub note: String,
     pub printer: String,
     pub process: String,
+    /// Bambu Studio's picture of the sliced plate (a PNG next to `file`), or `null`.
+    pub thumbnail: Option<String>,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
@@ -185,6 +206,31 @@ pub struct StatusParams {
     /// Its IPv4 address. Default: found on the network.
     #[serde(default)]
     pub ip: Option<String>,
+    /// A printer preset: each tray then names the filament preset that matches what is loaded.
+    #[serde(default)]
+    pub printer: Option<String>,
+}
+
+/// Pause, resume or stop the printer's job.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ControlParams {
+    /// The printer's serial number (from `bambu.printers`).
+    pub serial: String,
+    /// Its IPv4 address. Default: found on the network.
+    #[serde(default)]
+    pub ip: Option<String>,
+    /// pause, resume or stop.
+    pub action: String,
+}
+
+/// What `bambu.control` returns.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct ControlResult {
+    pub done: String,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
 }
 
 /// An AMS tray or the external spool.
@@ -196,6 +242,8 @@ pub struct TrayInfo {
     pub material: String,
     pub color: String,
     pub filament_id: String,
+    /// The filament preset that matches what is loaded, with `printer`; "" otherwise.
+    pub preset: String,
 }
 
 /// What `bambu.status` returns.

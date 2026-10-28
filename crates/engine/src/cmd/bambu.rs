@@ -20,6 +20,12 @@ use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("bambu.control", "Printer Control", crate::checked!("bambu.control", control))
+        .contract(&CONTROL_CONTRACT)
+        .output(output_schema_for::<sch::ControlResult>)
+        .icon("settings")
+        .noundo()
+        .params("serial; ip?; action: pause|resume|stop (the printer's current job) → done"),
     CommandSpec::new("bambu.open_in_studio", "Send with Bambu Studio", crate::checked!("bambu.open_in_studio", open_in_studio))
         .contract(&OPEN_CONTRACT)
         .output(output_schema_for::<sch::OpenInStudioResult>)
@@ -58,12 +64,27 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("serial; ip? → state, percent, minutes_left, layer, layers, job, nozzle, bed, error, summary, trays: [{tray, label, material, color, filament_id}]"),
 ];
 
+const CONTROL_CONTRACT: TypedContract<sch::ControlParams> = TypedContract::new();
 const OPEN_CONTRACT: TypedContract<sch::OpenInStudioParams> = TypedContract::new();
 const PRESETS_CONTRACT: TypedContract<sch::PresetsParams> = TypedContract::new();
 const PRINT_CONTRACT: TypedContract<sch::PrintParams> = TypedContract::new();
 const PRINTERS_CONTRACT: TypedContract<sch::PrintersParams> = TypedContract::new();
 const SLICE_CONTRACT: TypedContract<sch::SliceParams> = TypedContract::new();
 const STATUS_CONTRACT: TypedContract<sch::StatusParams> = TypedContract::new();
+
+/// The process settings the Print workspace shows (Bambu Studio's keys).
+const PROCESS_KEYS: [&str; 10] = [
+    "layer_height",
+    "wall_loops",
+    "top_shell_layers",
+    "bottom_shell_layers",
+    "sparse_infill_density",
+    "sparse_infill_pattern",
+    "enable_support",
+    "support_type",
+    "brim_type",
+    "enable_prime_tower",
+];
 
 /// How long a slice may take.
 const SLICE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -161,11 +182,29 @@ fn presets_of(p: &Value) -> Result<Value> {
     let lib = library(exe.as_deref(), cmd)?;
     let printer = printer_preset(&lib, p, cmd)?;
     let (x0, y0, x1, y1) = lib.bed(&printer);
+    let processes = lib.processes(&printer);
+    let process = match str_(p, "process") {
+        Some(n) if processes.iter().any(|x| x == n) => Some(n.to_string()),
+        Some(n) => return Err(bad(cmd, format!("`{n}` isn't a process preset for {printer}"))),
+        None => lib.default_process(&printer),
+    };
+    let process_values = process
+        .as_deref()
+        .map(|name| PROCESS_KEYS.iter().map(|k| (k.to_string(), lib.setting(name, k))).filter(|(_, v)| !v.is_empty()).collect())
+        .unwrap_or_default();
+    let filaments = lib.filaments(&printer, true);
+    let filament_info = filaments
+        .iter()
+        .map(|f| sch::FilamentInfo { color: lib.setting(f, "filament_colour"), material: lib.filament_type(f), filament_id: lib.filament_id(f) })
+        .collect();
     reply(sch::PresetsResult {
         studio: exe.map(|e| e.to_string_lossy().into_owned()),
         printers: lib.printers(),
-        processes: lib.processes(&printer),
-        filaments: lib.filaments(&printer, true),
+        processes,
+        process,
+        process_values,
+        filament_info,
+        filaments,
         default_process: lib.default_process(&printer),
         default_filament: lib.default_filament(&printer, "PLA"),
         bed_types: lib.bed_types().iter().map(|b| b.to_string()).collect(),
@@ -279,6 +318,7 @@ impl SlicePlan {
             grams: r.grams,
             filaments: used_info(&r.filaments),
             note: r.note,
+            thumbnail: slice::thumbnail(&r.file, 1).map(|t| t.to_string_lossy().into_owned()),
             printer: self.job.printer,
             process: self.job.process,
             ..Default::default()
@@ -342,6 +382,7 @@ pub fn run_detached(id: &str, p: &Value) -> Result<Value> {
         "bambu.printers" => printers_of(p),
         "bambu.status" => status_of(p),
         "bambu.print" => print_of(p),
+        "bambu.control" => control_of(p),
         _ => Err(EngineError::UnknownCommand(id.to_string())),
     }
 }
@@ -405,8 +446,15 @@ fn address(p: &Value, cmd: &str) -> Result<PrinterAddr> {
     Ok(PrinterAddr { ip, serial: sp.serial.clone(), access_code: sp.access_code.clone(), model: sp.model.clone() })
 }
 
-fn tray_info(t: &Tray) -> sch::TrayInfo {
-    sch::TrayInfo { tray: t.index(), label: t.label(), material: t.material.clone(), color: t.color.clone(), filament_id: t.filament_id.clone() }
+fn tray_info(t: &Tray, preset: String) -> sch::TrayInfo {
+    sch::TrayInfo {
+        tray: t.index(),
+        label: t.label(),
+        material: t.material.clone(),
+        color: t.color.clone(),
+        filament_id: t.filament_id.clone(),
+        preset,
+    }
 }
 
 fn status(_: &mut Session, p: &Value) -> Result<Value> {
@@ -419,9 +467,18 @@ fn status_of(p: &Value) -> Result<Value> {
     let pr = Printer::connect(addr, Duration::from_secs(6)).map_err(other)?;
     let st = pr.status();
     pr.close();
+    // with a printer preset, each tray names the filament preset that matches what's loaded
+    let lib = str_(p, "printer").map(|_| Library::for_install(profiles::find_studio(None).as_deref()));
+    let preset_of = |t: &Tray| match (&lib, str_(p, "printer")) {
+        (Some(lib), Some(printer)) => lib
+            .filament_for_id(&t.filament_id, printer)
+            .or_else(|| (!t.material.is_empty()).then(|| lib.default_filament(printer, &t.material)).flatten())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
     reply(sch::StatusResult {
         summary: st.summary(),
-        trays: st.trays.iter().map(tray_info).collect(),
+        trays: st.trays.iter().map(|t| tray_info(t, preset_of(t))).collect(),
         state: st.state,
         percent: st.percent,
         minutes_left: st.minutes_left,
@@ -433,6 +490,28 @@ fn status_of(p: &Value) -> Result<Value> {
         error: st.error,
         ..Default::default()
     })
+}
+
+fn control(_: &mut Session, p: &Value) -> Result<Value> {
+    control_of(p)
+}
+
+fn control_of(p: &Value) -> Result<Value> {
+    let cmd = "bambu.control";
+    let action = str_(p, "action").unwrap_or("").to_ascii_lowercase();
+    if !["pause", "resume", "stop"].contains(&action.as_str()) {
+        return Err(bad(cmd, "`action` is pause, resume or stop"));
+    }
+    let addr = address(p, cmd)?;
+    let mut pr = Printer::connect(addr, Duration::from_secs(6)).map_err(other)?;
+    let done = match action.as_str() {
+        "pause" => pr.pause(),
+        "resume" => pr.resume(),
+        _ => pr.stop(),
+    };
+    pr.close();
+    done.map_err(other)?;
+    reply(sch::ControlResult { done: action, ..Default::default() })
 }
 
 fn rgb(c: &str) -> Option<(i32, i32, i32)> {

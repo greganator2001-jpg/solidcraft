@@ -338,6 +338,23 @@ pub fn read_sliced(path: &Path, plate: u32) -> Result<SliceResult> {
     Ok(res)
 }
 
+/// Bambu Studio's picture of the sliced plate (`Metadata/plate_N.png`), saved next to the file; None
+/// when it has none.
+pub fn thumbnail(path: &Path, plate: u32) -> Option<PathBuf> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut z = zip::ZipArchive::new(f).ok()?;
+    let mut entry = z.by_name(&format!("Metadata/plate_{plate}.png")).ok()?;
+    if entry.size() > 16 << 20 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes).ok()?;
+    let out = path.with_file_name(format!("plate_{plate}.png"));
+    std::fs::write(&out, bytes).ok()?;
+    Some(out)
+}
+
 /// Read `<plate><metadata key=… value=…/><filament id=… used_g=…/></plate>`.
 pub fn parse_slice_info(xml: &str, plate: u32, res: &mut SliceResult) {
     use quick_xml::events::Event;

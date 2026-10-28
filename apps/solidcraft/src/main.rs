@@ -933,9 +933,7 @@ fn main() -> eframe::Result {
             }
             // Fission: the first time Fission starts it switches to its own theme, once; after that
             // the theme is whatever was chosen in Settings (SolidCraft's settings are shared).
-            if !safe_mode
-                && let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            {
+            if !safe_mode && let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
                 let marker = std::path::PathBuf::from(home).join("Fission").join("theme-applied");
                 if !marker.exists() {
                     app.preferences.theme = "fission".into();

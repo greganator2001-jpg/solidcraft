@@ -306,6 +306,11 @@ impl Library {
         self.flatten(name).ok().and_then(|f| f.get("filament_id").map(first_text)).unwrap_or_default()
     }
 
+    /// One setting of a preset as text (a per-extruder list's first entry), "" when it has none.
+    pub fn setting(&self, name: &str, key: &str) -> String {
+        self.flatten(name).ok().and_then(|f| f.get(key).map(first_text)).unwrap_or_default()
+    }
+
     /// The material ("PLA", "PETG" …), upper case.
     pub fn filament_type(&self, name: &str) -> String {
         self.flatten(name).ok().and_then(|f| f.get("filament_type").map(first_text)).unwrap_or_default().to_uppercase()
