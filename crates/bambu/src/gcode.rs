@@ -78,6 +78,18 @@ impl Toolpaths {
         self.segments.get(start..end.max(start)).unwrap_or(&[])
     }
 
+    /// Seconds spent on each line type at the programmed feed rates, by [`ROLES`] index. The real
+    /// print is slower (acceleration): use them as shares of the slicer's predicted time.
+    pub fn role_seconds(&self) -> Vec<(u8, f64)> {
+        let mut t = [0.0f64; ROLES.len()];
+        for s in &self.segments {
+            if let Some(x) = t.get_mut(usize::from(s.role)) {
+                *x += f64::from(dist(s.a, s.b)) / f64::from(s.feed.max(1.0)) * 60.0;
+            }
+        }
+        t.iter().enumerate().filter(|(_, x)| **x > 0.0).map(|(i, x)| (i as u8, *x)).collect()
+    }
+
     /// Each line type's share of the extruded length, by [`ROLES`] index.
     pub fn role_share(&self) -> Vec<(u8, f64)> {
         let mut len = [0.0f64; ROLES.len()];

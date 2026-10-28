@@ -76,17 +76,29 @@ const SLICE_CONTRACT: TypedContract<sch::SliceParams> = TypedContract::new();
 const STATUS_CONTRACT: TypedContract<sch::StatusParams> = TypedContract::new();
 
 /// The process settings the Print workspace shows (Bambu Studio's keys).
-const PROCESS_KEYS: [&str; 10] = [
+const PROCESS_KEYS: [&str; 22] = [
     "layer_height",
+    "initial_layer_print_height",
+    "seam_position",
+    "ironing_type",
     "wall_loops",
     "top_shell_layers",
     "bottom_shell_layers",
     "sparse_infill_density",
     "sparse_infill_pattern",
+    "outer_wall_speed",
+    "inner_wall_speed",
+    "sparse_infill_speed",
+    "travel_speed",
     "enable_support",
     "support_type",
+    "support_threshold_angle",
+    "support_on_build_plate_only",
     "brim_type",
+    "brim_width",
+    "skirt_loops",
     "enable_prime_tower",
+    "print_sequence",
 ];
 
 /// How long a slice may take.

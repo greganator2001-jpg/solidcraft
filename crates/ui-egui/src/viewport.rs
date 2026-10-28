@@ -4441,6 +4441,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         && !crate::dim_view::dragging()
         && !crate::sketch3d::dragging()
         && !crate::sketch_text_handles::dragging(app)
+        && !print_plate(app)
     {
         let origin = ui.input(|i| i.pointer.press_origin());
         if resp.dragged_by(egui::PointerButton::Primary)
@@ -4532,6 +4533,17 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             && !crate::shell::covered(app, *p)
     });
     crate::tool_cursor::show(app, &painter, badge_at);
+}
+
+/// Fission's BAMBU tab shows the print plate: a primary drag there moves parts, not a selection box.
+fn print_plate(app: &SolveApp) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::bambu_ui::active(app);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        false
+    }
 }
 
 fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {

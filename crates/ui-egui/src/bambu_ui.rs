@@ -31,6 +31,15 @@ enum Job {
     Control,
 }
 
+/// The Bring to plate window: which shown bodies go on the plate, on which filament, and each
+/// filament's colour (as FissionCAD asks when the slicer opens).
+struct Bring {
+    /// (body, on the plate, filament slot from 0, size).
+    rows: Vec<(String, bool, usize, [f64; 3])>,
+    colours: Vec<[u8; 3]>,
+    ask: bool,
+}
+
 /// What a click asks for (done after drawing, when `app` is free again).
 #[derive(Clone, Copy)]
 enum Act {
@@ -42,11 +51,12 @@ enum Act {
     Refresh,
     Control(&'static str),
     Leave,
+    Bring,
+    RemoveFromPlate,
+    Export,
 }
 
 const SEND_CHOICES: [&str; 3] = ["auto", "on", "off"];
-const BRIMS: [&str; 5] = ["auto_brim", "no_brim", "outer_only", "inner_only", "outer_and_inner"];
-const SUPPORTS: [&str; 4] = ["normal(auto)", "tree(auto)", "normal(manual)", "tree(manual)"];
 /// How often the chosen printer's status is read while the workspace is open.
 const STATUS_EVERY: f64 = 8.0;
 const MAX_SLOTS: usize = 16;
@@ -86,6 +96,14 @@ pub struct State {
     pending: Option<Act>,
     /// The plate in the 3D view: the parts where they'll print, the sliced toolpaths.
     pub(crate) plate: crate::bambu_plate::Plate,
+    /// The Bring to plate window, while it's open.
+    bring: Option<Bring>,
+    /// Bring to plate has been asked since the tab was entered.
+    asked: bool,
+    /// Let Bambu Studio turn the parts to print best when slicing.
+    orient: bool,
+    /// Don't ask Bring to plate on entering the tab (its "Ask me every time" unticked).
+    dont_ask: bool,
     /// The design's camera while the tab shows the plate (put back on leaving).
     design_camera: Option<(solidcraft_engine::render::Camera, bool)>,
     started: bool,
@@ -242,6 +260,7 @@ pub fn ribbon(app: &mut SolveApp, id: &str) -> bool {
 pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if !active(app) {
         app.bambu.plate.fitted = false;
+        app.bambu.asked = false;
         if let Some((cam, perspective)) = app.bambu.design_camera.take() {
             app.cam = cam;
             app.ui.perspective = perspective;
@@ -253,6 +272,21 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         }
         if app.bambu.plate.keys(ctx) {
             app.bambu.sliced = None;
+        }
+        // drag parts on the plate in Prepare
+        if !app.bambu.preview
+            && let Some(rect) = app.viewport.rect
+        {
+            let free = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !crate::shell::covered(app, p))
+                && app.bambu.bring.is_none()
+                && app.bambu.send.is_none();
+            let cam = app.cam;
+            if app.bambu.plate.drag(ctx, rect, &cam, free) {
+                app.bambu.sliced = None;
+            }
+        }
+        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::I)) {
+            app.bambu.pending = Some(Act::Bring);
         }
     }
     let answers: Vec<Answer> = app.bambu.channel.as_ref().map(|(_, rx)| rx.try_iter().collect()).unwrap_or_default();
@@ -414,11 +448,16 @@ pub fn plate_scene(app: &mut SolveApp) {
     let bodies = solidcraft_engine::cmd::bambu::plate_bodies(&app.session);
     let colours = body_colours(&app.bambu, &bodies);
     let preview = app.bambu.preview;
-    let key = app.bambu.plate.scene_key(preview, bed, &colours) ^ 0xF155_1011;
+    let filaments: Vec<String> = app.bambu.slots.iter().map(|sl| sl.color.clone()).collect();
+    let mut key = app.bambu.plate.scene_key(preview, bed, &colours);
+    for f in &filaments {
+        key = key.rotate_left(5) ^ f.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
+    }
+    let key = key ^ 0xF155_1011;
     let replaced: Vec<String> = bodies.iter().map(|(b, _)| b.clone()).collect();
     let bounds = crate::bambu_plate::Plate::bounds(bed, height);
     let plate = &app.bambu.plate;
-    app.preview.show_plate(key, replaced, bounds, || plate.scene(preview, bed, height, &colours));
+    app.preview.show_plate(key, replaced, bounds, || plate.scene(preview, bed, height, &colours, &filaments));
     if !app.bambu.plate.fitted {
         app.bambu.plate.fitted = true;
         if app.bambu.design_camera.is_none() {
@@ -433,12 +472,19 @@ fn slice_params(app: &SolveApp, bodies: &[(String, String)]) -> Value {
     let filaments = s.filament_names();
     let chosen: Vec<Value> =
         s.slots.iter().map(|sl| json!({"preset": filaments.get(sl.preset).cloned().unwrap_or_default(), "color": sl.color})).collect();
+    let on_plate = s.plate.on_plate();
+    let bodies: Vec<(String, String)> = bodies.iter().filter(|(b, _)| on_plate.contains(b)).cloned().collect();
     let slots: serde_json::Map<String, Value> =
         bodies.iter().map(|(b, _)| (b.clone(), json!(s.body_slot.get(b).copied().unwrap_or(1).clamp(1, s.slots.len().max(1))))).collect();
     let overrides: serde_json::Map<String, Value> = s.settings.edits.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-    let placements: serde_json::Map<String, Value> =
-        s.plate.places.iter().map(|(b, (x, y, r))| (b.clone(), json!({"x": x, "y": y, "rotation": r}))).collect();
-    let mut p = json!({"printer": s.printer_name(), "process": s.process_name(), "filaments": chosen, "slots": slots, "overrides": overrides, "placements": placements});
+    let placements: serde_json::Map<String, Value> = s
+        .plate
+        .places
+        .iter()
+        .filter(|(b, _)| on_plate.contains(b))
+        .map(|(b, (x, y, r))| (b.clone(), json!({"x": x, "y": y, "rotation": r})))
+        .collect();
+    let mut p = json!({"printer": s.printer_name(), "process": s.process_name(), "filaments": chosen, "slots": slots, "overrides": overrides, "placements": placements, "bodies": on_plate, "orient": s.orient});
     if let Some(bed) = names(&s.presets, "bed_types").get(s.bed) {
         p["bed_type"] = json!(bed);
     }
@@ -583,6 +629,9 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
             if ui_kit::button(ui, tr("fission.bambu.studio"), ui_kit::Button::Small).clicked() {
                 *act = Some(Act::Studio);
             }
+            if ui_kit::button(ui, tr("fission.plate.export"), ui_kit::Button::Enabled(s.sliced.is_some())).clicked() {
+                *act = Some(Act::Export);
+            }
             if ui_kit::button(ui, tr("fission.bambu.back"), ui_kit::Button::Small).clicked() {
                 *act = Some(Act::Leave);
             }
@@ -705,7 +754,8 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
         }
         let slot_names: Vec<String> = (1..=s.slots.len()).map(|n| format("fission.bambu.slot", &[("n", &n.to_string())])).collect();
         let refs: Vec<&str> = slot_names.iter().map(String::as_str).collect();
-        for (body, _) in bodies {
+        let on_plate = s.plate.on_plate();
+        for (body, _) in bodies.iter().filter(|(b, _)| on_plate.contains(b)) {
             let mut i = s.body_slot.get(body).copied().unwrap_or(1).clamp(1, s.slots.len().max(1)) - 1;
             let colour_now = s.slots.get(i).map(|sl| sl.color.clone()).unwrap_or_default();
             let picked = s.plate.selected.as_deref() == Some(body.as_str());
@@ -729,6 +779,12 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
         }
         if !bodies.is_empty() {
             ui.horizontal(|ui| {
+                if ui_kit::button(ui, tr("fission.plate.bring"), ui_kit::Button::Small).clicked() {
+                    *act = Some(Act::Bring);
+                }
+                if s.plate.selected.is_some() && ui_kit::button(ui, tr("fission.plate.remove"), ui_kit::Button::Small).clicked() {
+                    *act = Some(Act::RemoveFromPlate);
+                }
                 if ui_kit::button(ui, tr("fission.plate.arrange"), ui_kit::Button::Small).clicked() {
                     let b = bed(s);
                     s.plate.arrange(b);
@@ -736,6 +792,13 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
                     s.preview = false;
                 }
             });
+            if ui_kit::checkbox_row(ui, "fission_plate_lock", tr("fission.plate.lock"), s.plate.locked) {
+                s.plate.locked = !s.plate.locked;
+            }
+            if ui_kit::checkbox_row(ui, "fission_plate_orient", tr("fission.plate.orient"), s.orient) {
+                s.orient = !s.orient;
+                s.sliced = None;
+            }
             ui_kit::text(ui, tr("fission.plate.hint"), ui_kit::Text::Note("fission_plate_hint"));
             let off = s.plate.off_plate(bed(s));
             if !off.is_empty() {
@@ -762,55 +825,150 @@ fn sidebar(app: &mut SolveApp, ui: &mut egui::Ui, bodies: &[(String, String)], a
     });
 }
 
+/// How a process setting is edited.
+enum Field {
+    /// A number (or a percentage) typed in.
+    Text,
+    /// On or off ("1" / "0").
+    Check,
+    /// One of Bambu Studio's values, with labels.
+    Choice(&'static [(&'static str, &'static str)]),
+}
+
+const SEAMS: &[(&str, &str)] = &[
+    ("aligned", "fission.set.seam_aligned"),
+    ("nearest", "fission.set.seam_nearest"),
+    ("back", "fission.set.seam_back"),
+    ("random", "fission.set.seam_random"),
+];
+const IRONING: &[(&str, &str)] = &[
+    ("no ironing", "fission.set.ironing_none"),
+    ("top", "fission.set.ironing_top"),
+    ("topmost", "fission.set.ironing_topmost"),
+    ("solid", "fission.set.ironing_solid"),
+];
+const PATTERNS: &[(&str, &str)] = &[
+    ("grid", "fission.set.pattern_grid"),
+    ("gyroid", "fission.set.pattern_gyroid"),
+    ("cubic", "fission.set.pattern_cubic"),
+    ("honeycomb", "fission.set.pattern_honeycomb"),
+    ("line", "fission.set.pattern_line"),
+    ("crosshatch", "fission.set.pattern_crosshatch"),
+    ("triangles", "fission.set.pattern_triangles"),
+    ("lightning", "fission.set.pattern_lightning"),
+];
+const SUPPORT_TYPES: &[(&str, &str)] = &[
+    ("normal(auto)", "fission.bambu.support_normal"),
+    ("tree(auto)", "fission.bambu.support_tree"),
+    ("normal(manual)", "fission.bambu.support_normal_manual"),
+    ("tree(manual)", "fission.bambu.support_tree_manual"),
+];
+const BRIM_TYPES: &[(&str, &str)] = &[
+    ("auto_brim", "fission.bambu.brim_auto"),
+    ("no_brim", "fission.bambu.brim_none"),
+    ("outer_only", "fission.bambu.brim_outer"),
+    ("inner_only", "fission.bambu.brim_inner"),
+    ("outer_and_inner", "fission.bambu.brim_both"),
+];
+const SEQUENCES: &[(&str, &str)] = &[("by layer", "fission.set.by_layer"), ("by object", "fission.set.by_object")];
+
+/// The process settings shown, page by page (a page: its title and its settings).
+const PAGES: &[(&str, &[(&str, &str, Field)])] = &[
+    (
+        "fission.set.quality",
+        &[
+            ("layer_height", "fission.bambu.layer_height", Field::Text),
+            ("initial_layer_print_height", "fission.set.first_layer", Field::Text),
+            ("seam_position", "fission.set.seam", Field::Choice(SEAMS)),
+            ("ironing_type", "fission.set.ironing", Field::Choice(IRONING)),
+        ],
+    ),
+    (
+        "fission.set.strength",
+        &[
+            ("wall_loops", "fission.bambu.walls", Field::Text),
+            ("top_shell_layers", "fission.bambu.top_layers", Field::Text),
+            ("bottom_shell_layers", "fission.bambu.bottom_layers", Field::Text),
+            ("sparse_infill_density", "fission.bambu.infill", Field::Text),
+            ("sparse_infill_pattern", "fission.set.pattern", Field::Choice(PATTERNS)),
+        ],
+    ),
+    (
+        "fission.set.speed",
+        &[
+            ("outer_wall_speed", "fission.set.outer_wall_speed", Field::Text),
+            ("inner_wall_speed", "fission.set.inner_wall_speed", Field::Text),
+            ("sparse_infill_speed", "fission.set.infill_speed", Field::Text),
+            ("travel_speed", "fission.set.travel_speed", Field::Text),
+        ],
+    ),
+    (
+        "fission.set.support",
+        &[
+            ("enable_support", "fission.bambu.supports", Field::Check),
+            ("support_type", "fission.bambu.support_type", Field::Choice(SUPPORT_TYPES)),
+            ("support_threshold_angle", "fission.set.threshold", Field::Text),
+            ("support_on_build_plate_only", "fission.set.plate_only", Field::Check),
+        ],
+    ),
+    (
+        "fission.set.others",
+        &[
+            ("brim_type", "fission.bambu.brim", Field::Choice(BRIM_TYPES)),
+            ("brim_width", "fission.set.brim_width", Field::Text),
+            ("skirt_loops", "fission.set.skirt", Field::Text),
+            ("enable_prime_tower", "fission.set.prime_tower", Field::Check),
+            ("print_sequence", "fission.set.sequence", Field::Choice(SEQUENCES)),
+        ],
+    ),
+];
+
+/// The process preset's main settings, page by page like Bambu Studio's (Quality, Strength,
+/// Speed, Support, Others). A changed setting is sliced with, the preset itself stays as it is.
 fn process_settings(s: &mut State, ui: &mut egui::Ui) {
     let mut changed = false;
-    for (key, label) in [
-        ("layer_height", "fission.bambu.layer_height"),
-        ("wall_loops", "fission.bambu.walls"),
-        ("top_shell_layers", "fission.bambu.top_layers"),
-        ("bottom_shell_layers", "fission.bambu.bottom_layers"),
-        ("sparse_infill_density", "fission.bambu.infill"),
-    ] {
-        let mut v = s.settings.get(key);
-        let before = v.clone();
-        ui_kit::text_row(ui, tr(label), &mut v, "");
-        if v != before {
-            s.settings.set(key, v.trim().chars().take(16).collect());
-            changed = true;
-        }
-    }
-    let mut supports = s.settings.get("enable_support") == "1";
-    if ui_kit::checkbox_row(ui, "fission_bambu_supports", tr("fission.bambu.supports"), supports) {
-        supports = !supports;
-        s.settings.set("enable_support", if supports { "1" } else { "0" }.into());
-        changed = true;
-    }
-    if supports {
-        let current = s.settings.get("support_type");
-        let mut i = SUPPORTS.iter().position(|x| *x == current).unwrap_or(0);
-        let labels = [
-            tr("fission.bambu.support_normal"),
-            tr("fission.bambu.support_tree"),
-            tr("fission.bambu.support_normal_manual"),
-            tr("fission.bambu.support_tree_manual"),
-        ];
-        if ui_kit::choice_row(ui, tr("fission.bambu.support_type"), "fission_bambu_support_type", &mut i, &labels).changed() {
-            s.settings.set("support_type", SUPPORTS.get(i).copied().unwrap_or("normal(auto)").into());
-            changed = true;
-        }
-    }
-    let current = s.settings.get("brim_type");
-    let mut i = BRIMS.iter().position(|x| *x == current).unwrap_or(0);
-    let labels = [
-        tr("fission.bambu.brim_auto"),
-        tr("fission.bambu.brim_none"),
-        tr("fission.bambu.brim_outer"),
-        tr("fission.bambu.brim_inner"),
-        tr("fission.bambu.brim_both"),
-    ];
-    if ui_kit::choice_row(ui, tr("fission.bambu.brim"), "fission_bambu_brim", &mut i, &labels).changed() {
-        s.settings.set("brim_type", BRIMS.get(i).copied().unwrap_or("auto_brim").into());
-        changed = true;
+    for (page, fields) in PAGES {
+        let title = tr(page).to_string();
+        ui_kit::section(ui, *page, &title, *page == "fission.set.strength", |ui| {
+            for (key, label, kind) in fields.iter() {
+                // a setting the preset doesn't have isn't offered
+                if !s.settings.base.contains_key(*key) && !s.settings.edits.contains_key(*key) {
+                    continue;
+                }
+                let mut v = s.settings.get(key);
+                let before = v.clone();
+                match kind {
+                    Field::Text => {
+                        ui_kit::text_row(ui, tr(label), &mut v, "");
+                        v = v.trim().chars().take(16).collect();
+                    }
+                    Field::Check => {
+                        let on = v == "1" || v == "true";
+                        if ui_kit::checkbox_row(ui, &format!("fission_set_{key}"), tr(label), on) {
+                            v = if on { "0" } else { "1" }.into();
+                        }
+                    }
+                    Field::Choice(options) => {
+                        // a value this list doesn't know is kept, shown as Bambu Studio writes it
+                        let mut values: Vec<&str> = options.iter().map(|o| o.0).collect();
+                        let mut labels: Vec<String> = options.iter().map(|o| tr(o.1).to_string()).collect();
+                        if !values.contains(&v.as_str()) && !v.is_empty() {
+                            values.push(&before);
+                            labels.push(before.clone());
+                        }
+                        let mut i = values.iter().position(|x| *x == v).unwrap_or(0);
+                        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                        if ui_kit::choice_row(ui, tr(label), &format!("fission_set_{key}"), &mut i, &refs).changed() {
+                            v = values.get(i).copied().unwrap_or("").to_string();
+                        }
+                    }
+                }
+                if v != before {
+                    s.settings.set(key, v);
+                    changed = true;
+                }
+            }
+        });
     }
     if changed {
         s.sliced = None;
@@ -836,7 +994,8 @@ fn result_strip(app: &mut SolveApp, ui: &mut egui::Ui, act: &mut Option<Act>) {
                 let summary = format("fission.bambu.sliced", &[("time", text(v, "time")), ("grams", &format!("{:.1}", number(v, "grams")))]);
                 ui_kit::text(ui, &summary, ui_kit::Text::Value("fission_bambu_result", true));
             }
-            s.plate.preview_controls(ui);
+            let total = s.sliced.as_ref().map_or(0.0, |v| number(v, "seconds"));
+            s.plate.preview_controls(ui, total);
         } else if let Some(v) = &s.sliced {
             ui.horizontal(|ui| {
                 let summary = format("fission.bambu.sliced", &[("time", text(v, "time")), ("grams", &format!("{:.1}", number(v, "grams")))]);
@@ -927,6 +1086,106 @@ fn send_dialog(app: &mut SolveApp, ctx: &egui::Context, act: &mut Option<Act>) {
     }
 }
 
+fn rgb_of(hex: &str) -> [u8; 3] {
+    let c = colour(hex);
+    [c.r(), c.g(), c.b()]
+}
+
+/// Open Bring to plate with what's on the plate now.
+fn open_bring(s: &mut State) {
+    let sizes = s.plate.sizes();
+    let mut colours: Vec<[u8; 3]> = s.slots.iter().map(|sl| rgb_of(&sl.color)).collect();
+    if colours.is_empty() {
+        colours.push(rgb_of("#C8C8C8"));
+    }
+    let rows = sizes
+        .into_iter()
+        .map(|(name, size)| {
+            let slot = s.body_slot.get(&name).copied().unwrap_or(1).clamp(1, colours.len()) - 1;
+            let on = !s.plate.off.contains(&name);
+            (name, on, slot, size)
+        })
+        .collect();
+    s.bring = Some(Bring { rows, colours, ask: !s.dont_ask });
+}
+
+fn apply_bring(s: &mut State, b: Bring) {
+    s.plate.off = b.rows.iter().filter(|r| !r.1).map(|r| r.0.clone()).collect();
+    for (name, _, slot, _) in &b.rows {
+        s.body_slot.insert(name.clone(), slot + 1);
+    }
+    // one slot per colour chip: new chips take the first filament's preset
+    let preset = s.slots.first().map(|sl| sl.preset).unwrap_or(0);
+    s.slots.resize(b.colours.len().max(1), Slot { preset, color: String::new() });
+    for (slot, c) in s.slots.iter_mut().zip(&b.colours) {
+        slot.color = format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
+    }
+    s.dont_ask = !b.ask;
+    s.sliced = None;
+    s.preview = false;
+    if s.plate.selected.as_ref().is_some_and(|n| s.plate.off.contains(n)) {
+        s.plate.selected = None;
+    }
+}
+
+/// Bring to plate: tick the bodies to print, pick each one's filament, set the filaments' colours.
+fn bring_dialog(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some(mut b) = app.bambu.bring.take() else { return };
+    let title = tr("fission.plate.bring_title").to_string();
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("fission_bring"), "import", &title)
+        .cards(2.4)
+        .actions(tr("fission.plate.bring_ok"), tr("ui.cancel"), None)
+        .show(ctx, true, |ui| {
+            ui_kit::text(ui, tr("fission.plate.bring_intro"), ui_kit::Text::Note("fission_bring_intro"));
+            ui.horizontal_wrapped(|ui| {
+                ui_kit::text(ui, tr("fission.bambu.filaments"), ui_kit::Text::Inline);
+                for (k, c) in b.colours.iter_mut().enumerate() {
+                    chip(ui, &format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]), k + 1);
+                    ui_kit::color_field(ui, c);
+                }
+                if b.colours.len() < MAX_SLOTS && ui_kit::button(ui, "+", ui_kit::Button::Small).on_hover_text(tr("fission.bambu.add_slot")).clicked()
+                {
+                    let last = b.colours.last().copied().unwrap_or([200, 200, 200]);
+                    b.colours.push(last);
+                }
+            });
+            let slot_names: Vec<String> = (1..=b.colours.len()).map(|n| format("fission.bambu.slot", &[("n", &n.to_string())])).collect();
+            let refs: Vec<&str> = slot_names.iter().map(String::as_str).collect();
+            egui::ScrollArea::vertical().id_salt("fission_bring_rows").max_height(crate::theme::Tokens::get().control_height * 10.0).show(ui, |ui| {
+                for (name, on, slot, size) in b.rows.iter_mut() {
+                    *slot = (*slot).min(b.colours.len().saturating_sub(1));
+                    ui.horizontal(|ui| {
+                        if ui_kit::checkbox_row(ui, &format!("fission_bring_{name}"), name, *on) {
+                            *on = !*on;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        let hex = b.colours.get(*slot).map(|c| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])).unwrap_or_default();
+                        chip(ui, &hex, *slot + 1);
+                        ui_kit::dropdown(ui, &format!("fission_bring_slot_{name}"), slot, &refs);
+                        ui_kit::text(ui, &format!("{:.0} × {:.0} × {:.0} mm", size[0], size[1], size[2]), ui_kit::Text::Inline);
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui_kit::button(ui, tr("fission.plate.all"), ui_kit::Button::Small).clicked() {
+                    b.rows.iter_mut().for_each(|r| r.1 = true);
+                }
+                if ui_kit::button(ui, tr("fission.plate.none"), ui_kit::Button::Small).clicked() {
+                    b.rows.iter_mut().for_each(|r| r.1 = false);
+                }
+            });
+            if ui_kit::checkbox_row(ui, "fission_bring_ask", tr("fission.plate.ask"), b.ask) {
+                b.ask = !b.ask;
+            }
+        });
+    if action == ui_kit::Action::Ok {
+        apply_bring(&mut app.bambu, b);
+    } else if !(closed || action == ui_kit::Action::Cancel) {
+        app.bambu.bring = Some(b);
+    }
+}
+
 /// Draw the workspace (sidebar, result strip, preview and dialogs) when it's open.
 pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     if !active(app) {
@@ -952,6 +1211,12 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     result_strip(app, ui, &mut act);
     let ctx = ui.ctx().clone();
     send_dialog(app, &ctx, &mut act);
+    bring_dialog(app, &ctx);
+    // the first time the tab shows (each time it's entered), ask which bodies go on the plate
+    if !app.bambu.asked && !app.bambu.dont_ask && !bodies.is_empty() && !app.bambu.plate.sizes().is_empty() {
+        app.bambu.asked = true;
+        open_bring(&mut app.bambu);
+    }
     match act {
         Some(Act::Slice) => slice(app, &bodies),
         Some(Act::OpenSend) => {
@@ -974,6 +1239,25 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
         Some(Act::Leave) => app.ui.tab = "MODEL".into(),
+        Some(Act::Bring) => open_bring(&mut app.bambu),
+        Some(Act::Export) => {
+            if let Some(file) = app.bambu.sliced.as_ref().map(|v| text(v, "file").to_string()) {
+                let name = format!("{}.gcode.3mf", app.session.doc.name);
+                app.pick_save(&name, &["3mf"], move |app, path| {
+                    let Some(path) = path else { return };
+                    match std::fs::copy(&file, &path) {
+                        Ok(_) => app.set_status(format("fission.plate.exported", &[("path", &path)]), false),
+                        Err(e) => app.set_status(format!("{path}: {e}"), true),
+                    }
+                });
+            }
+        }
+        Some(Act::RemoveFromPlate) => {
+            if let Some(n) = app.bambu.plate.selected.take() {
+                app.bambu.plate.off.insert(n);
+                app.bambu.sliced = None;
+            }
+        }
         None => {}
     }
 }
