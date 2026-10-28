@@ -4245,6 +4245,17 @@ name = "solidcraft-3dx-client"
 version = "0.25.1"
 
 [[package]]
+name = "solidcraft-bambu"
+version = "0.25.1"
+dependencies = [
+ "log",
+ "quick-xml",
+ "rustls",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "solidcraft-cli"
 version = "0.25.1"
 dependencies = [
@@ -4292,6 +4303,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "solidcraft-bambu",
  "solidcraft-doc",
  "solidcraft-geom",
  "solidcraft-io",

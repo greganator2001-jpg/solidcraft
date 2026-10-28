@@ -402,6 +402,31 @@ pub fn export_mesh_at(b: &solidcraft_kernel::Body, quality: MeshQuality) -> Resu
     Ok(b.tessellate((b.size() * quality.share()).max(1e-3))?)
 }
 
+/// A body as a slicer takes it: welded closed where its faces meet (as for STL and 3MF export),
+/// in the state's coordinates, with the colour it is shown in.
+#[derive(Clone, Debug, Default)]
+pub struct PrintMesh {
+    pub name: String,
+    pub positions: Vec<[f64; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub color: Option<[f32; 3]>,
+}
+
+/// The named bodies (all of them when `bodies` is empty) as [`PrintMesh`]es.
+pub fn print_meshes(state: &ModelState, bodies: &[String], quality: MeshQuality) -> Result<Vec<PrintMesh>> {
+    let sel: Vec<&solidcraft_doc::ModelBody> = state.bodies.iter().filter(|b| bodies.is_empty() || bodies.contains(&b.name)).collect();
+    if sel.is_empty() {
+        return Err(IoError::Empty);
+    }
+    sel.iter()
+        .map(|b| {
+            let m = export_mesh_at(&b.body, quality)?;
+            let (positions, triangles) = weld(&m.positions, &m.triangles, weld_eps(&b.body));
+            Ok(PrintMesh { name: b.name.clone(), positions: positions.iter().map(|v| [v.x, v.y, v.z]).collect(), triangles, color: b.body.color() })
+        })
+        .collect()
+}
+
 /// Distance within which an exported mesh's vertices are welded (STL and 3MF alike).
 fn weld_eps(b: &solidcraft_kernel::Body) -> f64 {
     (b.size() * 1e-6).max(1e-7)

@@ -47,6 +47,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("render", Class::Layer(1)),
     ("doc", Class::Layer(2)),
     ("io", Class::Layer(3)),
+    // Fission: Bambu Lab presets, slicing with Bambu Studio and LAN printing (no workspace dependencies)
+    ("bambu", Class::Layer(3)),
     ("engine", Class::Layer(4)),
     ("ui-egui", Class::Layer(5)),
     ("gpu", Class::Layer(5)),

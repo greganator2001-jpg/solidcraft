@@ -1,0 +1,17 @@
+[package]
+name = "solidcraft-bambu"
+description = "Fission: printing on Bambu Lab printers — Bambu Studio's presets, slicing with its command line, and sending prints over the local network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+log = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
+# TLS to the printers (MQTT on 8883, FTPS on 990); same build of rustls the desktop app already ships.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

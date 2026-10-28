@@ -47,6 +47,10 @@ thiserror = { workspace = true }
 log = { workspace = true }
 web-time = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Fission: printing with Bambu Studio and Bambu Lab printers on the network.
+solidcraft-bambu = { workspace = true }
+
 [dev-dependencies]
 # Model-cache tests also run in a source tarball build (no git commit).
 solidcraft-io = { workspace = true, features = ["trust-unknown-source"] }

@@ -21,6 +21,7 @@ solidcraft-kernel = { path = "crates/kernel" }
 solidcraft-render = { path = "crates/render" }
 solidcraft-gpu = { path = "crates/gpu" }
 solidcraft-doc = { path = "crates/doc" }
+solidcraft-bambu = { path = "crates/bambu" }
 solidcraft-io = { path = "crates/io" }
 solidcraft-engine = { path = "crates/engine" }
 solidcraft-ui-egui = { path = "crates/ui-egui" }

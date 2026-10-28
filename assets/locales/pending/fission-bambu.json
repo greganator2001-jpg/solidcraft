@@ -1,0 +1,10 @@
+{
+  "en": {
+    "cmd.bambu.open_in_studio": "Send with Bambu Studio",
+    "cmd.bambu.presets": "Bambu Presets",
+    "cmd.bambu.print": "Print Plate",
+    "cmd.bambu.printers": "Bambu Printers",
+    "cmd.bambu.slice": "Slice Plate",
+    "cmd.bambu.status": "Printer Status"
+  }
+}

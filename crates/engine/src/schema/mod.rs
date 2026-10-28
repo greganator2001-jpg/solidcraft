@@ -54,6 +54,8 @@ mod coverage_tests;
 mod tests;
 
 // The contracts, by command file.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bambu;
 pub mod edit;
 pub mod features;
 pub mod inspect;

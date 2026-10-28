@@ -20,6 +20,8 @@ macro_rules! planned {
     };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod bambu;
 mod bom;
 mod browser;
 pub(crate) mod clearance;
@@ -309,6 +311,8 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(parameters::COMMANDS.iter());
     v.extend(parameter_sweep::COMMANDS.iter());
     v.extend(file::COMMANDS.iter());
+    #[cfg(not(target_arch = "wasm32"))]
+    v.extend(bambu::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(inspect::COMMANDS.iter());
     v.extend(compare::COMMANDS.iter());
