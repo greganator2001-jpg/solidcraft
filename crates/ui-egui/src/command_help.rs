@@ -10,6 +10,7 @@ use crate::i18n;
 pub const DOCUMENTED: &[&str] = &[
     "appearance.assign",
     "bambu.open_in_studio",
+    "bambu.print",
     "bambu.slice",
     "face.delete",
     "material.assign",

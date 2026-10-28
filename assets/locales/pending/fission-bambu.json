@@ -89,8 +89,11 @@
     "fission.note.title": "Note for Claude",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "Opens the shown bodies (or the last sliced plate) in Bambu Studio, each body on its filament. Use it when you want Bambu Studio's own tools before printing.",
+    "help.bambu.print": "Sends the sliced plate to a Bambu Lab printer on your network: choose the AMS tray for each filament and the print options, as in Bambu Studio's Send print. Use it once the plate is sliced.",
     "help.bambu.slice": "Opens the Print panel: slice the shown bodies with your Bambu Studio presets, see the print time and filament, and send the plate to a Bambu Lab printer on your network. Use it to print without leaving the design.",
-    "ui.heading_print": "PRINT"
+    "ui.heading_plate": "PLATE",
+    "ui.heading_print": "PRINT",
+    "ui.tab_bambu": "BAMBU"
   },
   "ja": {
     "cmd.bambu.control": "プリンター操作",
@@ -182,8 +185,11 @@
     "fission.note.title": "Claude へのメモ",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "表示中のボディ (または最後にスライスしたプレート) を、各ボディをそのフィラメントに割り当てて Bambu Studio で開きます。印刷前に Bambu Studio の機能を使いたいときに使います。",
+    "help.bambu.print": "スライスしたプレートをネットワーク上の Bambu Lab プリンターに送ります。Bambu Studio の「印刷を送信」と同じように、各フィラメントの AMS トレイと印刷オプションを選びます。プレートをスライスしたあとに使います。",
     "help.bambu.slice": "印刷パネルを開きます。表示中のボディを Bambu Studio のプリセットでスライスし、印刷時間とフィラメント量を確認して、ネットワーク上の Bambu Lab プリンターにプレートを送ります。デザインを離れずに印刷したいときに使います。",
-    "ui.heading_print": "印刷"
+    "ui.heading_plate": "プレート",
+    "ui.heading_print": "印刷",
+    "ui.tab_bambu": "BAMBU"
   },
   "zh": {
     "cmd.bambu.control": "打印机控制",
@@ -275,8 +281,11 @@
     "fission.note.title": "给 Claude 的备注",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "在 Bambu Studio 中打开显示的实体（或最后切片的打印盘），每个实体使用其耗材。需要在打印前使用 Bambu Studio 自带工具时使用。",
+    "help.bambu.print": "把切好的打印盘发送到网络上的 Bambu Lab 打印机：像 Bambu Studio 的“发送打印”一样，为每种耗材选择 AMS 料槽和打印选项。切片完成后使用。",
     "help.bambu.slice": "打开打印面板：用你的 Bambu Studio 预设切片显示的实体，查看打印时间和耗材，并把打印盘发送到网络上的 Bambu Lab 打印机。用于不离开设计就能打印。",
-    "ui.heading_print": "打印"
+    "ui.heading_plate": "打印盘",
+    "ui.heading_print": "打印",
+    "ui.tab_bambu": "BAMBU"
   },
   "vi": {
     "cmd.bambu.control": "Điều khiển máy in",
@@ -368,8 +377,11 @@
     "fission.note.title": "Ghi chú cho Claude",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "Mở các khối đang hiện (hoặc bàn in vừa cắt lớp) trong Bambu Studio, mỗi khối trên sợi nhựa của nó. Dùng khi bạn muốn dùng công cụ của Bambu Studio trước khi in.",
+    "help.bambu.print": "Gửi bàn in đã cắt lớp tới máy in Bambu Lab trong mạng: chọn khay AMS cho từng sợi nhựa và các tùy chọn in, như Gửi lệnh in của Bambu Studio. Dùng sau khi đã cắt lớp bàn in.",
     "help.bambu.slice": "Mở bảng In: cắt lớp các khối đang hiện bằng cài đặt sẵn Bambu Studio của bạn, xem thời gian in và lượng sợi nhựa, rồi gửi bàn in tới máy in Bambu Lab trong mạng. Dùng để in mà không rời thiết kế.",
-    "ui.heading_print": "IN"
+    "ui.heading_plate": "BÀN IN",
+    "ui.heading_print": "IN",
+    "ui.tab_bambu": "BAMBU"
   },
   "ar": {
     "cmd.bambu.control": "التحكم في الطابعة",
@@ -461,8 +473,11 @@
     "fission.note.title": "ملاحظة لـ Claude",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "يفتح الأجسام المعروضة (أو آخر لوح مقطّع) في Bambu Studio، كل جسم على خيطه. استخدمه عندما تريد أدوات Bambu Studio قبل الطباعة.",
+    "help.bambu.print": "يرسل اللوح المقطّع إلى طابعة Bambu Lab على شبكتك: اختر درج AMS لكل خيط وخيارات الطباعة، كما في «إرسال الطباعة» في Bambu Studio. استخدمه بعد تقطيع اللوح.",
     "help.bambu.slice": "يفتح لوحة الطباعة: قطّع الأجسام المعروضة بإعدادات Bambu Studio المسبقة لديك، واطّلع على زمن الطباعة والخيط، وأرسل اللوح إلى طابعة Bambu Lab على شبكتك. استخدمه للطباعة دون مغادرة التصميم.",
-    "ui.heading_print": "طباعة"
+    "ui.heading_plate": "اللوح",
+    "ui.heading_print": "طباعة",
+    "ui.tab_bambu": "BAMBU"
   },
   "he": {
     "cmd.bambu.control": "שליטה במדפסת",
@@ -554,7 +569,10 @@
     "fission.note.title": "הערה ל-Claude",
     "fission.ribbon.studio": "Bambu Studio",
     "help.bambu.open_in_studio": "פותח את הגופים המוצגים (או את המשטח שנפרס לאחרונה) ב-Bambu Studio, כל גוף על הפילמנט שלו. השתמש בזה כשאתה רוצה את הכלים של Bambu Studio לפני ההדפסה.",
+    "help.bambu.print": "שולח את המשטח הפרוס למדפסת Bambu Lab ברשת: בחר את מגש ה-AMS לכל פילמנט ואת אפשרויות ההדפסה, כמו ב„שליחת הדפסה” של Bambu Studio. השתמש בזה אחרי פריסת המשטח.",
     "help.bambu.slice": "פותח את חלונית ההדפסה: פריסת הגופים המוצגים בהגדרות הקבועות של Bambu Studio שלך, זמן ההדפסה והפילמנט, ושליחת המשטח למדפסת Bambu Lab ברשת. השתמש בזה כדי להדפיס בלי לעזוב את התכנון.",
-    "ui.heading_print": "הדפסה"
+    "ui.heading_plate": "משטח",
+    "ui.heading_print": "הדפסה",
+    "ui.tab_bambu": "BAMBU"
   }
 }
