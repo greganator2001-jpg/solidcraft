@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn hostile_ffx_and_script_paths_are_refused_plainly() {
-        let mut s = Session::new();
+        let mut s = Session::default();
         let dir = std::env::temp_dir().join(format!("fission-ffx-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let junk = dir.join("junk.ffx");

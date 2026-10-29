@@ -156,7 +156,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let close = ui_kit::Window::new(egui::Id::new("fission_fusion"), "play", &title).cards(2.0).show_body(ctx, |ui| {
         let s = &app.fusion_script;
         ui_kit::text(ui, tr("fission.fusion.intro"), ui_kit::Text::Note("fission_fusion_intro"));
-        if let Some((path, _)) = &s.running {
+        if let Some((path, _, _)) = &s.running {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui_kit::text(ui, &format("fission.fusion.running", &[("name", &name_of(path))]), ui_kit::Text::Note("fission_fusion_running"));

@@ -855,6 +855,8 @@ fn hostile_params_never_panic() {
         .iter()
         .map(|spec| spec.id)
         .filter(|id| !matches!(*id, "doc.open" | "file.save" | "file.save_as" | "file.export" | "file.save_mesh" | "sketch.export_dxf")) // file system side effects are covered by their own tests
+        // Fission: talking to printers on the network (waits seconds for answers) is covered by its own tests
+        .filter(|id| !matches!(*id, "bambu.discover" | "bambu.printers" | "bambu.status" | "bambu.control" | "bambu.print" | "bambu.test_printer"))
         .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
